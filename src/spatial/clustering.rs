@@ -1,12 +1,9 @@
+use crate::prelude::HashMap;
 use crate::{
-    core::{
-        bounds::Bounds,
-        geo::Point,
-    },
+    core::{bounds::Bounds, geo::Point},
     spatial::index::{SpatialIndex, SpatialItem},
     Result,
 };
-use std::collections::HashMap;
 
 /// Represents a cluster of markers
 #[derive(Debug, Clone)]
@@ -140,7 +137,7 @@ impl<T: Clone> Clustering<T> {
 
     /// Grid-based clustering algorithm
     fn grid_cluster(&self, items: Vec<&SpatialItem<T>>, zoom_level: f64) -> Vec<Cluster<T>> {
-        let mut grid: HashMap<(i32, i32), Vec<SpatialItem<T>>> = HashMap::new();
+        let mut grid: HashMap<(i32, i32), Vec<SpatialItem<T>>> = HashMap::default();
         let grid_size = self.config.grid_size;
 
         // Group items by grid cell
@@ -149,9 +146,7 @@ impl<T: Clone> Clustering<T> {
             let grid_x = (center.x / grid_size).floor() as i32;
             let grid_y = (center.y / grid_size).floor() as i32;
 
-            grid.entry((grid_x, grid_y))
-                .or_default()
-                .push(item.clone());
+            grid.entry((grid_x, grid_y)).or_default().push(item.clone());
         }
 
         // Create clusters from grid cells
@@ -182,52 +177,6 @@ impl<T: Clone> Clustering<T> {
                     ));
                 }
             }
-        }
-
-        clusters
-    }
-
-    /// Distance-based clustering algorithm (more sophisticated but slower)
-    fn distance_cluster(&self, items: Vec<&SpatialItem<T>>, zoom_level: f64) -> Vec<Cluster<T>> {
-        let mut clusters = Vec::new();
-        let mut processed = vec![false; items.len()];
-
-        for (i, item) in items.iter().enumerate() {
-            if processed[i] {
-                continue;
-            }
-
-            let mut cluster_items = vec![(*item).clone()];
-            processed[i] = true;
-
-            let item_center = item.bounds.center();
-
-            // Find nearby items
-            for (j, other_item) in items.iter().enumerate() {
-                if i == j || processed[j] {
-                    continue;
-                }
-
-                let other_center = other_item.bounds.center();
-                let distance = ((item_center.x - other_center.x).powi(2)
-                    + (item_center.y - other_center.y).powi(2))
-                .sqrt();
-
-                if distance <= self.config.max_cluster_radius {
-                    cluster_items.push((*other_item).clone());
-                    processed[j] = true;
-
-                    if cluster_items.len() >= self.config.max_cluster_size {
-                        break;
-                    }
-                }
-            }
-
-            clusters.push(Cluster::new(
-                format!("cluster_{}", clusters.len()),
-                cluster_items,
-                zoom_level,
-            ));
         }
 
         clusters

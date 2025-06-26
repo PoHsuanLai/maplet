@@ -1,12 +1,14 @@
 use crate::{
-    background::{BackgroundTaskManager, tasks::TaskManagerConfig},
+    background::{tasks::TaskManagerConfig, BackgroundTaskManager},
     core::{config::MapPerformanceOptions, geo::LatLng, viewport::Viewport},
     input::events::InputEvent,
     layers::{base::LayerTrait, manager::LayerManager},
     plugins::base::PluginTrait,
     Result,
 };
-use std::collections::{HashMap, VecDeque};
+
+use fxhash::FxHashMap;
+use std::collections::VecDeque;
 
 /// Event types that can be emitted by the map
 #[derive(Debug, Clone, PartialEq)]
@@ -53,9 +55,9 @@ pub struct Map {
     /// Layer management
     layer_manager: LayerManager,
     /// Registered plugins
-    plugins: HashMap<String, Box<dyn PluginTrait>>,
+    plugins: FxHashMap<String, Box<dyn PluginTrait>>,
     /// Event listeners
-    event_listeners: HashMap<String, Vec<EventCallback>>,
+    event_listeners: FxHashMap<String, Vec<EventCallback>>,
     /// Event queue for processing
     event_queue: VecDeque<MapEvent>,
     /// Map options and settings
@@ -97,9 +99,9 @@ pub struct MapOptions {
     pub attribution_control: bool,
     /// Whether to show zoom control
     pub zoom_control: bool,
-    /// Snap zoom levels to multiples of this value 
+    /// Snap zoom levels to multiples of this value
     pub zoom_snap: f64,
-    /// Amount of zoom change for one discrete step 
+    /// Amount of zoom change for one discrete step
     pub zoom_delta: f64,
 }
 
@@ -133,12 +135,12 @@ impl Map {
     pub fn with_options(viewport: Viewport, options: MapOptions) -> Self {
         let performance = MapPerformanceOptions::default();
         let now = std::time::Instant::now();
-        
+
         let mut map = Self {
             viewport,
             layer_manager: LayerManager::new(),
-            plugins: HashMap::new(),
-            event_listeners: HashMap::new(),
+            plugins: FxHashMap::default(),
+            event_listeners: FxHashMap::default(),
             event_queue: VecDeque::new(),
             options,
             performance,
@@ -159,18 +161,18 @@ impl Map {
 
     /// Creates a new map with custom options and performance configuration
     pub fn with_options_and_performance(
-        viewport: Viewport, 
-        options: MapOptions, 
+        viewport: Viewport,
+        options: MapOptions,
         performance: MapPerformanceOptions,
-        task_config: TaskManagerConfig
+        task_config: TaskManagerConfig,
     ) -> Result<Self> {
         let now = std::time::Instant::now();
-        
+
         let mut map = Self {
             viewport,
             layer_manager: LayerManager::new(),
-            plugins: HashMap::new(),
-            event_listeners: HashMap::new(),
+            plugins: FxHashMap::default(),
+            event_listeners: FxHashMap::default(),
             event_queue: VecDeque::new(),
             options,
             performance,
@@ -494,7 +496,8 @@ impl Map {
         use crate::core::bounds::Bounds;
         use crate::spatial::culling::Culling;
 
-        let screen_bounds = Bounds::from_coords(0.0, 0.0, self.viewport.size.x, self.viewport.size.y);
+        let screen_bounds =
+            Bounds::from_coords(0.0, 0.0, self.viewport.size.x, self.viewport.size.y);
 
         // Render all layers in z-index order, culling those off-screen.
         self.layer_manager.for_each_layer_mut(|layer| {
@@ -537,7 +540,7 @@ impl Map {
     #[cfg(not(feature = "render"))]
     pub fn render(&mut self, _render_context: &mut ()) -> Result<()> {
         Err(Box::new(crate::MapError::FeatureNotEnabled(
-            "render feature not enabled - enable 'render' feature to use GPU rendering".to_string()
+            "render feature not enabled - enable 'render' feature to use GPU rendering".to_string(),
         )))
     }
 
@@ -573,12 +576,16 @@ impl Map {
 
     /// Check if rendering should occur based on performance settings
     pub fn should_render(&self) -> bool {
-        self.performance.framerate.should_render(self.last_render_time)
+        self.performance
+            .framerate
+            .should_render(self.last_render_time)
     }
 
     /// Check if updating should occur based on performance settings
     pub fn should_update(&self) -> bool {
-        self.performance.framerate.should_update(self.last_update_time)
+        self.performance
+            .framerate
+            .should_update(self.last_update_time)
     }
 
     /// Mark that a render has occurred (for timing tracking)
@@ -618,7 +625,7 @@ impl Map {
     fn handle_keyboard_navigation(
         &mut self,
         key: &crate::input::events::KeyCode,
-        modifiers: &crate::input::events::KeyModifiers,
+        _modifiers: &crate::input::events::KeyModifiers,
     ) -> Result<()> {
         use crate::core::geo::Point;
         use crate::input::events::KeyCode;

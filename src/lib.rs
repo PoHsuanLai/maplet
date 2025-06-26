@@ -22,16 +22,16 @@
 
 // Core modules (always available)
 pub mod animation;
+pub mod background;
 pub mod core;
 pub mod data;
 pub mod input;
 pub mod layers;
 pub mod plugins;
+pub mod prelude;
+pub mod runtime;
 pub mod spatial;
 pub mod tiles;
-pub mod runtime;
-pub mod background;
-pub mod prelude;
 
 // Feature-gated modules
 #[cfg(feature = "render")]
@@ -47,21 +47,16 @@ pub use core::{
     bounds::Bounds,
     builder::MapBuilder,
     config::{
-        MapPerformanceProfile, MapPerformanceOptions, FrameTimingConfig,
-        TileLoadingConfig, InteractionAnimationConfig, GpuRenderingConfig,
-        TextureFilterMode
+        FrameTimingConfig, GpuRenderingConfig, InteractionAnimationConfig, MapPerformanceOptions,
+        MapPerformanceProfile, TextureFilterMode, TileLoadingConfig,
     },
-    geo::{LatLng, LatLngBounds, TileCoord, Point},
+    geo::{LatLng, LatLngBounds, Point, TileCoord},
     map::{Map, MapOptions},
     viewport::Viewport,
 };
 
 pub use layers::{
-    base::LayerTrait, 
-    canvas::CanvasLayer, 
-    image::ImageLayer, 
-    marker::Marker, 
-    tile::TileLayer,
+    base::LayerTrait, canvas::CanvasLayer, image::ImageLayer, marker::Marker, tile::TileLayer,
     vector::VectorLayer,
 };
 
@@ -71,10 +66,7 @@ pub use input::{events::InputEvent, handler::InputHandler};
 pub use ui::{controls::MapControls, popup::Popup, widget::MapWidget};
 
 pub use plugins::{
-    base::PluginTrait, 
-    draw::DrawPlugin, 
-    heatmap::HeatmapPlugin, 
-    measure::MeasurePlugin,
+    base::PluginTrait, draw::DrawPlugin, heatmap::HeatmapPlugin, measure::MeasurePlugin,
 };
 
 #[cfg(feature = "render")]
@@ -86,7 +78,7 @@ pub use animation::{transitions::Transition, tweening::Tween};
 
 pub use data::{formats::DataFormat, geojson::GeoJsonLayer};
 
-pub use background::{BackgroundTaskManager, tasks::TaskPriority};
+pub use background::{tasks::TaskPriority, BackgroundTaskManager};
 
 /// Result type used throughout the library
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -118,7 +110,7 @@ pub enum MapError {
 
     #[error("Parse error: {0}")]
     ParseError(String),
-    
+
     #[error("Feature not enabled: {0}")]
     FeatureNotEnabled(String),
 }

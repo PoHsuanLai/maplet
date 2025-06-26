@@ -1,11 +1,11 @@
-use crate::core::geo::{LatLng, LatLngBounds, Point};
 use crate::core::bounds::Bounds;
+use crate::core::geo::{LatLng, LatLngBounds};
+use crate::prelude::HashMap;
 use crate::spatial::index::{SpatialIndex, SpatialItem};
 use crate::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::io::{BufRead, BufReader, Read};
+use std::sync::Arc;
 
 /// GeoJSON feature types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,7 +45,9 @@ pub struct GeoJsonFeature {
 impl GeoJsonFeature {
     /// Get the bounds of this feature
     pub fn bounds(&self) -> Option<LatLngBounds> {
-        self.geometry.as_ref().and_then(|g| GeoJsonLayer::geometry_bounds(g))
+        self.geometry
+            .as_ref()
+            .and_then(GeoJsonLayer::geometry_bounds)
     }
 }
 
@@ -86,17 +88,29 @@ impl Default for FeatureStyle {
     }
 }
 
+/// Type alias for style functions
+pub type StyleFunction = Box<dyn Fn(&GeoJsonFeature) -> FeatureStyle + Send + Sync>;
+
+/// Type alias for filter functions  
+pub type FilterFunction = Box<dyn Fn(&GeoJsonFeature) -> bool + Send + Sync>;
+
+/// Type alias for filter functions in streaming config
+pub type FilterFunctionArc = Arc<dyn Fn(&GeoJsonFeature) -> bool + Send + Sync>;
+
 /// GeoJSON layer for displaying geographic data
 pub struct GeoJsonLayer {
     data: GeoJson,
     style: FeatureStyle,
-    style_fn: Option<Box<dyn Fn(&GeoJsonFeature) -> FeatureStyle + Send + Sync>>,
-    filter_fn: Option<Box<dyn Fn(&GeoJsonFeature) -> bool + Send + Sync>>,
+    style_fn: Option<StyleFunction>,
+    filter_fn: Option<FilterFunction>,
 }
 
-impl GeoJsonLayer {
+impl std::str::FromStr for GeoJsonLayer {
+    type Err =
+        std::boxed::Box<(dyn std::error::Error + std::marker::Send + std::marker::Sync + 'static)>;
+
     /// Creates a new GeoJSON layer from raw JSON string
-    pub fn from_str(geojson_str: &str) -> crate::Result<Self> {
+    fn from_str(geojson_str: &str) -> crate::Result<Self> {
         let data: GeoJson = serde_json::from_str(geojson_str)
             .map_err(|e| crate::Error::ParseError(format!("Invalid GeoJSON: {}", e)))?;
 
@@ -107,7 +121,9 @@ impl GeoJsonLayer {
             filter_fn: None,
         })
     }
+}
 
+impl GeoJsonLayer {
     /// Creates a new GeoJSON layer from parsed GeoJSON
     pub fn new(data: GeoJson) -> Self {
         Self {
@@ -429,6 +445,7 @@ impl GeoJsonGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_geojson_parsing() {
@@ -494,7 +511,6 @@ mod tests {
 }
 
 /// Configuration for streaming GeoJSON processing
-#[derive(Clone)]
 pub struct StreamingConfig {
     /// Maximum number of features to process in one chunk
     pub chunk_size: usize,
@@ -505,7 +521,7 @@ pub struct StreamingConfig {
     /// Spatial index configuration
     pub spatial_index: bool,
     /// Feature filtering predicate
-    pub filter: Option<Arc<dyn Fn(&GeoJsonFeature) -> bool + Send + Sync>>,
+    pub filter: Option<FilterFunctionArc>,
 }
 
 impl Default for StreamingConfig {
@@ -589,7 +605,7 @@ impl StreamingGeoJsonProcessor {
             stats: ProcessingStats::default(),
         }
     }
-    
+
     /// Process GeoJSON from a reader in chunks
     pub fn process_stream<R: Read>(&mut self, reader: R) -> Result<()> {
         let start_time = std::time::Instant::now();
@@ -598,11 +614,11 @@ impl StreamingGeoJsonProcessor {
         let mut in_feature_collection = false;
         let mut brace_count = 0;
         let mut current_feature = String::new();
-        
+
         while buf_reader.read_line(&mut buffer)? > 0 {
             for ch in buffer.chars() {
                 current_feature.push(ch);
-                
+
                 match ch {
                     '{' => {
                         brace_count += 1;
@@ -623,7 +639,9 @@ impl StreamingGeoJsonProcessor {
                     ',' => {
                         if in_feature_collection && brace_count == 1 {
                             // End of a feature (with comma)
-                            if let Ok(feature) = self.parse_feature(&current_feature.trim_end_matches(',')) {
+                            if let Ok(feature) =
+                                self.parse_feature(current_feature.trim_end_matches(','))
+                            {
                                 self.add_feature(feature)?;
                             }
                             current_feature.clear();
@@ -634,21 +652,22 @@ impl StreamingGeoJsonProcessor {
             }
             buffer.clear();
         }
-        
+
         // Process any remaining features
         if !self.current_chunk.is_empty() {
             self.flush_chunk()?;
         }
-        
+
         // Update statistics
         self.stats.total_time = start_time.elapsed();
         if self.stats.total_time.as_secs_f64() > 0.0 {
-            self.stats.processing_speed = self.stats.features_processed as f64 / self.stats.total_time.as_secs_f64();
+            self.stats.processing_speed =
+                self.stats.features_processed as f64 / self.stats.total_time.as_secs_f64();
         }
-        
+
         Ok(())
     }
-    
+
     /// Add a feature to the current chunk
     fn add_feature(&mut self, feature: GeoJsonFeature) -> Result<()> {
         // Apply filter if configured
@@ -657,34 +676,35 @@ impl StreamingGeoJsonProcessor {
                 return Ok(());
             }
         }
-        
+
         // Estimate memory usage
         let feature_memory = self.estimate_feature_memory(&feature);
-        
+
         // Check if we need to flush the current chunk
-        if self.current_chunk.len() >= self.config.chunk_size 
-           || self.current_memory + feature_memory > self.config.memory_limit {
+        if self.current_chunk.len() >= self.config.chunk_size
+            || self.current_memory + feature_memory > self.config.memory_limit
+        {
             self.flush_chunk()?;
         }
-        
+
         self.current_chunk.push(feature);
         self.current_memory += feature_memory;
         self.total_features += 1;
-        
+
         Ok(())
     }
-    
+
     /// Flush the current chunk
     fn flush_chunk(&mut self) -> Result<()> {
         if self.current_chunk.is_empty() {
             return Ok(());
         }
-        
+
         let start_time = std::time::Instant::now();
-        
+
         // Calculate bounds
         let bounds = self.calculate_chunk_bounds(&self.current_chunk);
-        
+
         // Build spatial index if enabled
         let spatial_index = if self.config.spatial_index {
             let mut index = SpatialIndex::new();
@@ -709,9 +729,9 @@ impl StreamingGeoJsonProcessor {
         } else {
             None
         };
-        
+
         let processing_time = start_time.elapsed();
-        
+
         // Create chunk
         let chunk = FeatureChunk {
             features: std::mem::take(&mut self.current_chunk),
@@ -724,30 +744,30 @@ impl StreamingGeoJsonProcessor {
                 processing_time,
             },
         };
-        
+
         self.completed_chunks.push(chunk);
         self.current_memory = 0;
         self.stats.chunks_processed += 1;
         self.stats.features_processed += self.current_chunk.len();
-        
+
         Ok(())
     }
-    
+
     /// Parse a feature from JSON string
     fn parse_feature(&self, json_str: &str) -> Result<GeoJsonFeature> {
         let cleaned = json_str.trim().trim_start_matches(',').trim();
         serde_json::from_str(cleaned).map_err(|e| format!("Failed to parse feature: {}", e).into())
     }
-    
+
     /// Estimate memory usage of a feature
     fn estimate_feature_memory(&self, feature: &GeoJsonFeature) -> usize {
         // Rough estimation based on JSON serialization size
         match serde_json::to_string(feature) {
             Ok(json) => json.len() * 2, // Account for overhead
-            Err(_) => 1024, // Default estimate
+            Err(_) => 1024,             // Default estimate
         }
     }
-    
+
     /// Calculate bounds for a chunk of features
     fn calculate_chunk_bounds(&self, features: &[GeoJsonFeature]) -> Option<LatLngBounds> {
         let mut min_lat = f64::INFINITY;
@@ -755,7 +775,7 @@ impl StreamingGeoJsonProcessor {
         let mut min_lng = f64::INFINITY;
         let mut max_lng = f64::NEG_INFINITY;
         let mut has_bounds = false;
-        
+
         for feature in features {
             if let Some(bounds) = feature.bounds() {
                 has_bounds = true;
@@ -765,7 +785,7 @@ impl StreamingGeoJsonProcessor {
                 max_lng = max_lng.max(bounds.north_east.lng);
             }
         }
-        
+
         if has_bounds {
             Some(LatLngBounds::new(
                 LatLng::new(min_lat, min_lng),
@@ -775,34 +795,35 @@ impl StreamingGeoJsonProcessor {
             None
         }
     }
-    
+
     /// Get all completed chunks
     pub fn chunks(&self) -> &[FeatureChunk] {
         &self.completed_chunks
     }
-    
+
     /// Get processing statistics
     pub fn stats(&self) -> &ProcessingStats {
         &self.stats
     }
-    
+
     /// Get chunks within a specific bounds (spatial query)
     pub fn chunks_in_bounds(&self, bounds: &LatLngBounds) -> Vec<&FeatureChunk> {
         self.completed_chunks
             .iter()
             .filter(|chunk| {
-                chunk.bounds
+                chunk
+                    .bounds
                     .as_ref()
                     .map(|cb| cb.intersects(bounds))
                     .unwrap_or(false)
             })
             .collect()
     }
-    
+
     /// Get features within bounds from all chunks
     pub fn features_in_bounds(&self, bounds: &LatLngBounds) -> Vec<&GeoJsonFeature> {
         let mut features = Vec::new();
-        
+
         for chunk in self.chunks_in_bounds(bounds) {
             if let Some(spatial_index) = &chunk.spatial_index {
                 // Use spatial index for efficient querying
@@ -826,10 +847,10 @@ impl StreamingGeoJsonProcessor {
                 }
             }
         }
-        
+
         features
     }
-    
+
     /// Clear all processed data to free memory
     pub fn clear(&mut self) {
         self.current_chunk.clear();
@@ -867,27 +888,27 @@ impl ProgressiveGeoJsonLoader {
             progress_callback: None,
         }
     }
-    
+
     /// Set progress callback
-    pub fn with_progress_callback<F>(mut self, callback: F) -> Self 
-    where 
-        F: Fn(f64) + Send + Sync + 'static 
+    pub fn with_progress_callback<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(f64) + Send + Sync + 'static,
     {
         self.progress_callback = Some(Box::new(callback));
         self
     }
-    
+
     /// Load GeoJSON progressively from bytes
     pub async fn load_progressive(&mut self, data: Vec<u8>) -> Result<()> {
         self.state = LoadingState::Loading { progress: 0.0 };
-        
+
         // Simulate progressive loading by processing in chunks
-        let chunk_size = 8192; // 8KB chunks
-        let total_size = data.len();
-        
+        let _chunk_size = 8192; // 8KB chunks
+        let _total_size = data.len();
+
         let mut cursor = std::io::Cursor::new(data);
-        let mut processed = 0;
-        
+        let _processed = 0;
+
         // Process the data
         match self.processor.process_stream(&mut cursor) {
             Ok(_) => {
@@ -900,20 +921,20 @@ impl ProgressiveGeoJsonLoader {
                 self.state = LoadingState::Error(e.to_string());
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Get current loading state
     pub fn state(&self) -> &LoadingState {
         &self.state
     }
-    
+
     /// Get the processor
     pub fn processor(&self) -> &StreamingGeoJsonProcessor {
         &self.processor
     }
-    
+
     /// Get mutable processor
     pub fn processor_mut(&mut self) -> &mut StreamingGeoJsonProcessor {
         &mut self.processor

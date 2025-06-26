@@ -1,11 +1,9 @@
-use crate::{
-    core::viewport::Viewport, layers::base::LayerTrait, Result,
-};
+use crate::{core::viewport::Viewport, layers::base::LayerTrait, Result};
 
 #[cfg(feature = "render")]
 use crate::rendering::context::RenderContext;
 
-use std::collections::HashMap;
+use crate::prelude::HashMap;
 
 /// Manages layers for the map, handling ordering and rendering
 pub struct LayerManager {
@@ -18,7 +16,7 @@ pub struct LayerManager {
 impl LayerManager {
     pub fn new() -> Self {
         Self {
-            layers: HashMap::new(),
+            layers: HashMap::default(),
             render_order: Vec::new(),
         }
     }

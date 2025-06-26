@@ -1,7 +1,4 @@
-use crate::core::{
-    geo::Point,
-    viewport::Viewport,
-};
+use crate::core::{geo::Point, viewport::Viewport};
 use nalgebra::{Matrix4, Point3, Vector3, Vector4};
 
 /// 2D camera for map rendering

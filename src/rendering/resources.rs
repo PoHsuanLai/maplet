@@ -1,5 +1,5 @@
+use crate::prelude::HashMap;
 use crate::Result;
-use std::collections::HashMap;
 use wgpu::{BindGroup, BindGroupLayout, Buffer, Device, Queue, Sampler, Texture, TextureView};
 
 /// Manages GPU resources and provides caching
@@ -35,12 +35,12 @@ impl Resources {
         Self {
             device: None,
             queue: None,
-            textures: HashMap::new(),
-            texture_views: HashMap::new(),
-            buffers: HashMap::new(),
-            bind_groups: HashMap::new(),
-            samplers: HashMap::new(),
-            bind_group_layouts: HashMap::new(),
+            textures: HashMap::default(),
+            texture_views: HashMap::default(),
+            buffers: HashMap::default(),
+            bind_groups: HashMap::default(),
+            samplers: HashMap::default(),
+            bind_group_layouts: HashMap::default(),
         }
     }
 

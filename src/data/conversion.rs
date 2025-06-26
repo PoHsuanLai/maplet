@@ -1,5 +1,5 @@
 use crate::core::geo::{LatLng, Point, TileCoord};
-use std::collections::HashMap;
+use crate::prelude::HashMap;
 
 /// Coordinate reference system definitions
 #[derive(Debug)]
@@ -25,7 +25,7 @@ pub struct Converter {
 impl Converter {
     pub fn new() -> Self {
         Self {
-            transformations: HashMap::new(),
+            transformations: HashMap::default(),
         }
     }
 

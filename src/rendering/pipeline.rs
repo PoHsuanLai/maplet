@@ -1,9 +1,8 @@
 use crate::Result;
-use std::collections::HashMap;
+use fxhash::FxHashMap;
 use wgpu::{
-    Adapter, BindGroup, BindGroupLayout, Buffer, CommandEncoder, Device, Instance, Queue,
-    RenderPass, RenderPipeline as WgpuRenderPipeline, SurfaceConfiguration, Texture,
-    TextureView,
+    Adapter, BindGroupLayout, Buffer, CommandEncoder, Device, Instance, Queue,
+    RenderPass, RenderPipeline as WgpuRenderPipeline, SurfaceConfiguration, Texture, TextureView,
 };
 
 /// Different types of render passes
@@ -38,15 +37,14 @@ pub struct RenderPipeline {
     pub surface_config: Option<SurfaceConfiguration>,
 
     // Rendering pipelines for different types
-    pipelines: HashMap<RenderPassType, WgpuRenderPipeline>,
-    bind_group_layouts: HashMap<RenderPassType, BindGroupLayout>,
+    pipelines: FxHashMap<RenderPassType, WgpuRenderPipeline>,
+    bind_group_layouts: FxHashMap<RenderPassType, BindGroupLayout>,
 
     // Shared resources
     camera_buffer: Buffer,
-    camera_bind_group: BindGroup,
 
     // Texture resources
-    texture_cache: HashMap<String, Texture>,
+    texture_cache: FxHashMap<String, Texture>,
 
     pub enabled: bool,
 }
@@ -110,7 +108,7 @@ impl RenderPipeline {
             });
 
         // Create camera bind group
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let _camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Camera Bind Group"),
             layout: &camera_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -125,11 +123,10 @@ impl RenderPipeline {
             queue,
             surface: None,
             surface_config: None,
-            pipelines: HashMap::new(),
-            bind_group_layouts: HashMap::new(),
+            pipelines: FxHashMap::default(),
+            bind_group_layouts: FxHashMap::default(),
             camera_buffer,
-            camera_bind_group,
-            texture_cache: HashMap::new(),
+            texture_cache: FxHashMap::default(),
             enabled: true,
         };
 
@@ -564,21 +561,5 @@ impl RenderPipeline {
     }
 }
 
-impl Default for RenderPipeline {
-    fn default() -> Self {
-        // This will be replaced by async new() in practice
-        Self {
-            adapter: unsafe { std::mem::zeroed() },
-            device: unsafe { std::mem::zeroed() },
-            queue: unsafe { std::mem::zeroed() },
-            surface: None,
-            surface_config: None,
-            pipelines: HashMap::new(),
-            bind_group_layouts: HashMap::new(),
-            camera_buffer: unsafe { std::mem::zeroed() },
-            camera_bind_group: unsafe { std::mem::zeroed() },
-            texture_cache: HashMap::new(),
-            enabled: true,
-        }
-    }
-}
+// Removed Default implementation as it uses unsafe zeroed values
+// Use RenderPipeline::new() instead

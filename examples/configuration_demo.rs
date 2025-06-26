@@ -2,17 +2,16 @@
 //! and custom configurations with the MapBuilder.
 
 use maplet::{
-    core::{geo::{LatLng, Point}},
-    MapBuilder, MapPerformanceProfile, MapPerformanceOptions,
-    FrameTimingConfig, TileLoadingConfig, InteractionAnimationConfig, GpuRenderingConfig,
-    TextureFilterMode,
     animation::interpolation::EasingFunction,
+    core::geo::{LatLng, Point},
+    FrameTimingConfig, GpuRenderingConfig, InteractionAnimationConfig, MapBuilder,
+    MapPerformanceOptions, MapPerformanceProfile, TextureFilterMode, TileLoadingConfig,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the Tokio runtime for async operations
     let rt = tokio::runtime::Runtime::new()?;
-    
+
     rt.block_on(async {
         // Example coordinates (New York City)
         let center = LatLng::new(40.7128, -74.0060);
@@ -31,14 +30,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         demo_convenience_builders(center, size).await?;
 
         println!("✅ All configuration examples completed successfully!");
-        
+
         Ok::<(), maplet::Error>(())
     })?;
 
     Ok(())
 }
 
-async fn demo_preset_profiles(center: LatLng, size: Point) -> Result<(), Box<dyn std::error::Error>> {
+async fn demo_preset_profiles(
+    center: LatLng,
+    size: Point,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("📊 1. Preset Performance Profiles");
     println!("==================================");
 
@@ -83,33 +85,36 @@ async fn demo_preset_profiles(center: LatLng, size: Point) -> Result<(), Box<dyn
     Ok(())
 }
 
-async fn demo_custom_configuration(center: LatLng, size: Point) -> Result<(), Box<dyn std::error::Error>> {
+async fn demo_custom_configuration(
+    center: LatLng,
+    size: Point,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("🎛️  2. Custom Performance Configuration");
     println!("======================================");
 
     // Create a custom performance configuration
     let custom_performance = MapPerformanceOptions {
         framerate: FrameTimingConfig {
-            target_fps: Some(45),                 // 45 FPS cap
-            render_on_idle: true,                 // Continue rendering when idle
-            min_update_interval_ms: 16,           // Update at ~60Hz
+            target_fps: Some(45),       // 45 FPS cap
+            render_on_idle: true,       // Continue rendering when idle
+            min_update_interval_ms: 16, // Update at ~60Hz
         },
         tile_loader: TileLoadingConfig {
-            cache_size: 2048,                     // 2048 tiles in cache
-            fetch_batch_size: 8,                  // Load 8 tiles concurrently
-            lazy_eviction: true,                  // Lazy cache eviction
+            cache_size: 2048,    // 2048 tiles in cache
+            fetch_batch_size: 8, // Load 8 tiles concurrently
+            lazy_eviction: true, // Lazy cache eviction
         },
         animation: InteractionAnimationConfig {
-            enable_transitions: true,             // Enable smooth transitions
+            enable_transitions: true, // Enable smooth transitions
             pan_easing: EasingFunction::EaseInOutCubic,
             zoom_easing: EasingFunction::EaseOutExpo,
-            max_zoom_step_per_frame: 0.1,        // Smooth zoom steps
+            max_zoom_step_per_frame: 0.1, // Smooth zoom steps
         },
         rendering: GpuRenderingConfig {
-            msaa_samples: 4,                      // 4x MSAA
+            msaa_samples: 4,                                   // 4x MSAA
             texture_filter: TextureFilterMode::Anisotropic(8), // 8x anisotropic filtering
-            enable_vector_smoothing: true,        // Enable vector smoothing
-            glyph_atlas_max_bytes: 4_000_000,     // 4MB glyph atlas
+            enable_vector_smoothing: true,                     // Enable vector smoothing
+            glyph_atlas_max_bytes: 4_000_000,                  // 4MB glyph atlas
         },
     };
 
@@ -121,23 +126,44 @@ async fn demo_custom_configuration(center: LatLng, size: Point) -> Result<(), Bo
         .with_double_click_zoom(true);
 
     println!("✓ Custom Configuration:");
-    println!("  - Target FPS: {} (render on idle: {})", 
+    println!(
+        "  - Target FPS: {} (render on idle: {})",
         custom_performance.framerate.target_fps.unwrap_or(0),
-        custom_performance.framerate.render_on_idle);
-    println!("  - Cache: {} tiles, {} concurrent fetches", 
-        custom_performance.tile_loader.cache_size,
-        custom_performance.tile_loader.fetch_batch_size);
-    println!("  - Pan Easing: {:?}", custom_performance.animation.pan_easing);
-    println!("  - Zoom Easing: {:?}", custom_performance.animation.zoom_easing);
-    println!("  - MSAA: {}x samples", custom_performance.rendering.msaa_samples);
-    println!("  - Texture Filter: {:?}", custom_performance.rendering.texture_filter);
-    println!("  - Estimated VRAM: {:.1}MB", custom_performance.rendering.estimated_vram_usage_mb());
+        custom_performance.framerate.render_on_idle
+    );
+    println!(
+        "  - Cache: {} tiles, {} concurrent fetches",
+        custom_performance.tile_loader.cache_size, custom_performance.tile_loader.fetch_batch_size
+    );
+    println!(
+        "  - Pan Easing: {:?}",
+        custom_performance.animation.pan_easing
+    );
+    println!(
+        "  - Zoom Easing: {:?}",
+        custom_performance.animation.zoom_easing
+    );
+    println!(
+        "  - MSAA: {}x samples",
+        custom_performance.rendering.msaa_samples
+    );
+    println!(
+        "  - Texture Filter: {:?}",
+        custom_performance.rendering.texture_filter
+    );
+    println!(
+        "  - Estimated VRAM: {:.1}MB",
+        custom_performance.rendering.estimated_vram_usage_mb()
+    );
     println!();
 
     Ok(())
 }
 
-async fn demo_convenience_builders(center: LatLng, size: Point) -> Result<(), Box<dyn std::error::Error>> {
+async fn demo_convenience_builders(
+    center: LatLng,
+    size: Point,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 3. Convenience Map Builders");
     println!("==============================");
 
@@ -160,9 +186,9 @@ async fn demo_convenience_builders(center: LatLng, size: Point) -> Result<(), Bo
     // Demonstrate method chaining with additional customization
     let customized_web_map = MapBuilder::web_map(center, 12.0, size)
         .with_zoom_limits(Some(5.0), Some(18.0))
-        .with_zoom_behavior(0.5, 0.5)  // Finer zoom control
+        .with_zoom_behavior(0.5, 0.5) // Finer zoom control
         .with_attribution_control(false);
-    
+
     println!("✓ Customized Web Map: Web defaults + custom zoom limits and behavior");
     println!();
 
@@ -232,4 +258,4 @@ mod tests {
 
         // All builders should be valid
     }
-} 
+}

@@ -1,24 +1,22 @@
 use maplet::prelude::*;
-use maplet::ui::{
-    popup::*, controls::*, MapWidget, MapWidgetConfig, MapCursor, MapStyle, MapThemes,
-};
+use maplet::ui::{controls::*, popup::*, MapCursor, MapThemes, MapWidget, MapWidgetConfig};
 use std::time::Duration;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     env_logger::init();
-    
+
     // Create map centered on San Francisco
     let center = LatLng::new(37.7749, -122.4194);
     let zoom = 12.0;
     let size = Point::new(1200.0, 800.0);
-    
+
     let mut map = Map::new(center, zoom, size);
-    
+
     // Add OpenStreetMap tiles
     let osm_layer = TileLayer::openstreetmap("osm".to_string(), "OpenStreetMap".to_string());
     map.add_layer(Box::new(osm_layer))?;
-    
+
     // Create comprehensive map controls
     let map_controls = MapControls::new()
         .with_zoom_control(ZoomControlConfig::default())
@@ -57,10 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             show_accuracy: true,
             ..LocationConfig::default()
         });
-    
+
     // Create popup manager and add various popup types
     let mut popup_manager = PopupManager::new();
-    
+
     // Add a welcome info popup
     popup_manager.show_info(
         "welcome".to_string(),
@@ -68,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Welcome to Maplet".to_string(),
         "This is a comprehensive demo of the Maplet UI system featuring popups, controls, and interactive widgets.".to_string(),
     )?;
-    
+
     // Add a marker popup
     let marker_pos = LatLng::new(37.7849, -122.4094); // Fisherman's Wharf
     popup_manager.show_text_popup(
@@ -76,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         marker_pos,
         "🐟 Fisherman's Wharf - A popular tourist destination with shops, restaurants, and sea lions!".to_string(),
     )?;
-    
+
     // Add a form popup for user feedback
     let feedback_popup = Popup::new_text(
         "feedback_form".to_string(),
@@ -96,9 +94,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     })
     .with_auto_close(Duration::from_secs(10));
-    
+
     popup_manager.add_popup(feedback_popup)?;
-    
+
     // Create map widget with custom styling
     let widget_config = MapWidgetConfig {
         interactive: true,
@@ -112,12 +110,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         zoom_snap: 1.0,
         zoom_delta: 1.0,
     };
-    
+
     let mut map_widget = MapWidget::with_config(map, widget_config);
-    
+
     // Apply dark theme styling
     let dark_style = MapThemes::dark();
-    
+
     println!("🗺️ Maplet UI Demo");
     println!("================");
     println!();
@@ -162,63 +160,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("• Measurement tools provide real-time feedback");
     println!("• Search functionality for location discovery");
     println!();
-    
+
     // Simulate some interactions and updates
-    let viewport = map_widget.viewport().unwrap_or(&Viewport::default()).clone();
-    
+    let viewport = map_widget.viewport().unwrap_or(Viewport::default()).clone();
+
     // Update popup positions based on viewport
     popup_manager.update(&viewport, 0.016)?; // 60 FPS
-    
+
     // Display popup information
     let visible_popups = popup_manager.get_visible_popups();
     println!("Currently active popups: {}", visible_popups.len());
     for popup in &visible_popups {
-        println!("  • {}: {} at ({:.4}, {:.4})", 
-                 popup.id, 
-                 match &popup.popup_type {
-                     PopupType::Text => "Text",
-                     PopupType::Info => "Info",
-                     PopupType::Confirmation => "Confirmation",
-                     PopupType::Form => "Form",
-                     _ => "Other",
-                 },
-                 popup.anchor_position.lat, 
-                 popup.anchor_position.lng);
+        println!(
+            "  • {}: {} at ({:.4}, {:.4})",
+            popup.id,
+            match &popup.popup_type {
+                PopupType::Text => "Text",
+                PopupType::Info => "Info",
+                PopupType::Confirmation => "Confirmation",
+                PopupType::Form => "Form",
+                _ => "Other",
+            },
+            popup.anchor_position.lat,
+            popup.anchor_position.lng
+        );
     }
-    
+
     println!();
     println!("Theme System:");
     println!("• Light Theme: Default bright theme for daytime use");
     println!("• Dark Theme: Low-light theme for night use");
     println!("• High Contrast: Accessibility theme for better visibility");
     println!("• Custom Themes: Define your own color schemes");
-    
+
     println!();
     println!("Performance Features:");
     println!("• Efficient popup management with z-index sorting");
     println!("• Smooth animations with 60fps update rate");
     println!("• Responsive controls that adapt to viewport changes");
     println!("• Memory-efficient caching and cleanup");
-    
+
     println!();
     println!("Integration Ready:");
     println!("• Compatible with egui for immediate mode GUI");
     println!("• Tokio async runtime support");
     println!("• Feature-gated dependencies for minimal builds");
     println!("• WASM-compatible for web deployment");
-    
+
     println!();
     println!("✅ UI Demo completed successfully!");
     println!("The Maplet UI system is ready for integration into mapping applications.");
-    
+
     Ok(())
 }
 
 /// Helper function to demonstrate advanced popup usage
-async fn demonstrate_advanced_popups() -> Result<(), Box<dyn std::error::Error>> {
+async fn demonstrate_advanced_popups() -> Result<()> {
     let mut popup_manager = PopupManager::new();
     let center = LatLng::new(37.7749, -122.4194);
-    
+
     // Create a rich content popup
     let rich_popup = Popup {
         id: "rich_demo".to_string(),
@@ -269,9 +269,9 @@ async fn demonstrate_advanced_popups() -> Result<(), Box<dyn std::error::Error>>
         hovered: false,
         form_data: std::collections::HashMap::new(),
     };
-    
+
     popup_manager.add_popup(rich_popup)?;
-    
+
     // Create a form popup
     let form_popup = Popup {
         id: "contact_form".to_string(),
@@ -375,9 +375,9 @@ async fn demonstrate_advanced_popups() -> Result<(), Box<dyn std::error::Error>>
         hovered: false,
         form_data: std::collections::HashMap::new(),
     };
-    
+
     popup_manager.add_popup(form_popup)?;
-    
+
     Ok(())
 }
 
@@ -385,7 +385,7 @@ async fn demonstrate_advanced_popups() -> Result<(), Box<dyn std::error::Error>>
 fn demonstrate_control_customization() {
     println!("Control Customization Examples:");
     println!("==============================");
-    
+
     // Custom zoom control
     let custom_zoom = ZoomControlConfig {
         base: ControlConfig {
@@ -400,14 +400,14 @@ fn demonstrate_control_customization() {
         zoom_out_text: "🔍-".to_string(),
         ..ZoomControlConfig::default()
     };
-    
+
     println!("• Custom Zoom Control:");
     println!("  - Position: Top Left with 20px margin");
     println!("  - Draggable: Yes");
     println!("  - Shows current zoom level");
     println!("  - Custom emoji buttons (🔍+ / 🔍-)");
     println!("  - Larger button size (40px)");
-    
+
     // Custom search control
     let custom_search = SearchConfig {
         base: ControlConfig {
@@ -421,14 +421,14 @@ fn demonstrate_control_customization() {
         search_delay: 200,
         live_search: true,
     };
-    
+
     println!("• Custom Search Control:");
     println!("  - Position: Top Center");
     println!("  - Enhanced placeholder with emoji");
     println!("  - Increased max results (20)");
     println!("  - Lower minimum character threshold (2)");
     println!("  - Faster search delay (200ms)");
-    
+
     // Custom measurement tools
     let custom_measurement = MeasurementConfig {
         base: ControlConfig {
@@ -445,12 +445,12 @@ fn demonstrate_control_customization() {
         show_area: true,
         show_perimeter: true,
     };
-    
+
     println!("• Custom Measurement Tools:");
     println!("  - Position: Custom coordinates (100, 200)");
     println!("  - All measurement tools available");
     println!("  - Metric units enforced");
     println!("  - Shows both area and perimeter");
-    
+
     println!();
-} 
+}

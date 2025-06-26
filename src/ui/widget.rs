@@ -1,3 +1,4 @@
+use crate::prelude::FxHasher;
 use crate::{
     animation::TransitionManager,
     core::{
@@ -8,26 +9,13 @@ use crate::{
     input::events::{EventHandled, InputEvent, KeyCode, KeyModifiers},
     Result,
 };
-use egui::{
-    Align2,
-    Color32,
-    FontId,
-    Pos2,
-    Rect,
-    Response,
-    Sense,
-    Stroke,
-    Ui,
-    Vec2,
-};
 use egui::epaint::{Mesh, Vertex};
-use std::sync::{Arc, Mutex};
-use std::num::NonZeroUsize;
-use lru::LruCache;
-use pollster;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
 use image;
+use lru::LruCache;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 
 /// Configuration for the map widget
 #[derive(Debug, Clone)]
@@ -119,6 +107,9 @@ impl Default for DragState {
     }
 }
 
+/// Type alias for viewport change callbacks
+pub type ViewportChangeFn = Box<dyn Fn(&Viewport) + Send + Sync>;
+
 /// The main map widget that can be embedded in egui applications
 pub struct MapWidget {
     /// The map instance
@@ -138,7 +129,7 @@ pub struct MapWidget {
     pub on_double_click: Option<Box<dyn Fn(LatLng) + Send + Sync>>,
     pub on_zoom_changed: Option<Box<dyn Fn(f64) + Send + Sync>>,
     pub on_center_changed: Option<Box<dyn Fn(LatLng) + Send + Sync>>,
-    pub on_viewport_changed: Option<Box<dyn Fn(&Viewport) + Send + Sync>>,
+    pub on_viewport_changed: Option<ViewportChangeFn>,
     /// Last frame time for delta calculations
     last_frame_time: Option<std::time::Instant>,
     /// Cached tile textures with LRU eviction
@@ -292,7 +283,8 @@ impl MapWidget {
                 ui.ctx().request_repaint();
             } else {
                 // Throttled repaint for tile loading (every 16ms for smooth 60fps)
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(16));
             }
             // Reset flag so that we only repaint continuously while it is needed
             self.needs_repaint = false;
@@ -433,16 +425,21 @@ impl MapWidget {
             let width = rect.width().max(1.0) as u32;
             let height = rect.height().max(1.0) as u32;
 
-            if let Ok(mut render_ctx) = crate::rendering::context::RenderContext::new(width, height) {
+            if let Ok(mut render_ctx) = crate::rendering::context::RenderContext::new(width, height)
+            {
                 let _ = render_ctx.begin_frame();
 
                 // Call map.render (now sync)
                 let _ = map.render(&mut render_ctx);
 
                 // Build meshes grouped by texture for efficient batching
-                let mut mesh_map: std::collections::HashMap<egui::TextureId, Mesh> = std::collections::HashMap::new();
+                let mut mesh_map: std::collections::HashMap<egui::TextureId, Mesh> =
+                    std::collections::HashMap::new();
 
-                log::debug!("drawing queue has {} commands", render_ctx.get_drawing_queue().len());
+                log::debug!(
+                    "drawing queue has {} commands",
+                    render_ctx.get_drawing_queue().len()
+                );
 
                 for cmd in render_ctx.get_drawing_queue() {
                     match cmd {
@@ -450,7 +447,7 @@ impl MapWidget {
                             // Generate a stable cache key from the tile bytes so the texture can
                             // be reused while the map is panned. Using a quick hash avoids
                             // re-decoding and uploading identical images each frame.
-                            let mut hasher = DefaultHasher::new();
+                            let mut hasher = FxHasher::default();
                             // Hash some of the bytes for speed (first 4 KB or full length if smaller)
                             let sample_len = data.len().min(4096);
                             data[..sample_len].hash(&mut hasher);
@@ -465,12 +462,24 @@ impl MapWidget {
                             } else {
                                 // Try to decode immediately for small images
                                 if data.len() < 50_000 {
-                                    if let Some((pixels, size)) = self.decode_image_immediate(data) {
-                                        log::debug!("decoded texture {} bytes={} size={}x{}", key, pixels.len(), size[0], size[1]);
+                                    if let Some((pixels, size)) = self.decode_image_immediate(data)
+                                    {
+                                        log::debug!(
+                                            "decoded texture {} bytes={} size={}x{}",
+                                            key,
+                                            pixels.len(),
+                                            size[0],
+                                            size[1]
+                                        );
 
                                         // Upload to egui texture registry
-                                        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                                        let handle = ui.ctx().load_texture(key.clone(), color_image, egui::TextureOptions::default());
+                                        let color_image =
+                                            egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                                        let handle = ui.ctx().load_texture(
+                                            key.clone(),
+                                            color_image,
+                                            egui::TextureOptions::default(),
+                                        );
 
                                         self.tile_textures.put(key, handle.clone());
                                         log::debug!("uploaded texture ({}x{})", size[0], size[1]);
@@ -481,33 +490,56 @@ impl MapWidget {
                                     }
                                 } else {
                                     // Skip large images for now to avoid blocking
-                                    log::debug!("Skipping large image ({} bytes) to avoid blocking", data.len());
+                                    log::debug!(
+                                        "Skipping large image ({} bytes) to avoid blocking",
+                                        data.len()
+                                    );
                                     None
                                 }
                             };
 
                             if let Some(tex_handle) = tex_handle {
                                 let (min_point, max_point) = *bounds;
-                                let dest_min_vec = rect.min + Vec2::new(min_point.x as f32, min_point.y as f32);
-                                let dest_max_vec = rect.min + Vec2::new(max_point.x as f32, max_point.y as f32);
+                                let dest_min_vec =
+                                    rect.min + Vec2::new(min_point.x as f32, min_point.y as f32);
+                                let dest_max_vec =
+                                    rect.min + Vec2::new(max_point.x as f32, max_point.y as f32);
 
                                 let tl = Pos2::new(dest_min_vec.x, dest_min_vec.y);
                                 let tr = Pos2::new(dest_max_vec.x, dest_min_vec.y);
                                 let br = Pos2::new(dest_max_vec.x, dest_max_vec.y);
                                 let bl = Pos2::new(dest_min_vec.x, dest_max_vec.y);
 
-                                let mesh = mesh_map.entry(tex_handle.id()).or_insert_with(|| {
-                                    let mut m = Mesh::default();
-                                    m.texture_id = tex_handle.id();
-                                    m
-                                });
+                                let mesh =
+                                    mesh_map
+                                        .entry(tex_handle.id())
+                                        .or_insert_with(|| egui::Mesh {
+                                            texture_id: tex_handle.id(),
+                                            ..Default::default()
+                                        });
 
                                 let base_idx = mesh.vertices.len() as u32;
 
-                                mesh.vertices.push(Vertex { pos: tl, uv: Pos2::new(0.0, 0.0), color: Color32::WHITE });
-                                mesh.vertices.push(Vertex { pos: tr, uv: Pos2::new(1.0, 0.0), color: Color32::WHITE });
-                                mesh.vertices.push(Vertex { pos: br, uv: Pos2::new(1.0, 1.0), color: Color32::WHITE });
-                                mesh.vertices.push(Vertex { pos: bl, uv: Pos2::new(0.0, 1.0), color: Color32::WHITE });
+                                mesh.vertices.push(Vertex {
+                                    pos: tl,
+                                    uv: Pos2::new(0.0, 0.0),
+                                    color: Color32::WHITE,
+                                });
+                                mesh.vertices.push(Vertex {
+                                    pos: tr,
+                                    uv: Pos2::new(1.0, 0.0),
+                                    color: Color32::WHITE,
+                                });
+                                mesh.vertices.push(Vertex {
+                                    pos: br,
+                                    uv: Pos2::new(1.0, 1.0),
+                                    color: Color32::WHITE,
+                                });
+                                mesh.vertices.push(Vertex {
+                                    pos: bl,
+                                    uv: Pos2::new(0.0, 1.0),
+                                    color: Color32::WHITE,
+                                });
 
                                 mesh.indices.extend_from_slice(&[
                                     base_idx,
@@ -519,16 +551,21 @@ impl MapWidget {
                                 ]);
                             }
                         }
-                        crate::rendering::context::DrawCommand::TileTextured { texture_id, bounds, .. } => {
-                            let mesh = mesh_map.entry(*texture_id).or_insert_with(|| {
-                                let mut m = Mesh::default();
-                                m.texture_id = *texture_id;
-                                m
+                        crate::rendering::context::DrawCommand::TileTextured {
+                            texture_id,
+                            bounds,
+                            ..
+                        } => {
+                            let mesh = mesh_map.entry(*texture_id).or_insert_with(|| egui::Mesh {
+                                texture_id: *texture_id,
+                                ..Default::default()
                             });
 
                             let (min_point, max_point) = *bounds;
-                            let dest_min_vec = rect.min + Vec2::new(min_point.x as f32, min_point.y as f32);
-                            let dest_max_vec = rect.min + Vec2::new(max_point.x as f32, max_point.y as f32);
+                            let dest_min_vec =
+                                rect.min + Vec2::new(min_point.x as f32, min_point.y as f32);
+                            let dest_max_vec =
+                                rect.min + Vec2::new(max_point.x as f32, max_point.y as f32);
 
                             let tl = Pos2::new(dest_min_vec.x, dest_min_vec.y);
                             let tr = Pos2::new(dest_max_vec.x, dest_min_vec.y);
@@ -536,10 +573,26 @@ impl MapWidget {
                             let bl = Pos2::new(dest_min_vec.x, dest_max_vec.y);
 
                             let base_idx = mesh.vertices.len() as u32;
-                            mesh.vertices.push(Vertex { pos: tl, uv: Pos2::new(0.0, 0.0), color: Color32::WHITE });
-                            mesh.vertices.push(Vertex { pos: tr, uv: Pos2::new(1.0, 0.0), color: Color32::WHITE });
-                            mesh.vertices.push(Vertex { pos: br, uv: Pos2::new(1.0, 1.0), color: Color32::WHITE });
-                            mesh.vertices.push(Vertex { pos: bl, uv: Pos2::new(0.0, 1.0), color: Color32::WHITE });
+                            mesh.vertices.push(Vertex {
+                                pos: tl,
+                                uv: Pos2::new(0.0, 0.0),
+                                color: Color32::WHITE,
+                            });
+                            mesh.vertices.push(Vertex {
+                                pos: tr,
+                                uv: Pos2::new(1.0, 0.0),
+                                color: Color32::WHITE,
+                            });
+                            mesh.vertices.push(Vertex {
+                                pos: br,
+                                uv: Pos2::new(1.0, 1.0),
+                                color: Color32::WHITE,
+                            });
+                            mesh.vertices.push(Vertex {
+                                pos: bl,
+                                uv: Pos2::new(0.0, 1.0),
+                                color: Color32::WHITE,
+                            });
 
                             mesh.indices.extend_from_slice(&[
                                 base_idx,
@@ -764,7 +817,7 @@ impl MapWidget {
     }
 
     /// Handle key press events
-    fn handle_key_press(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<EventHandled> {
+    fn handle_key_press(&mut self, key: KeyCode, _modifiers: KeyModifiers) -> Result<EventHandled> {
         if let Ok(mut map) = self.map.lock() {
             let pan_distance = 50.0;
             let zoom_step = self.config.zoom_delta;
@@ -813,8 +866,8 @@ impl MapWidget {
     /// Zoom in
     pub fn zoom_in(&mut self, focus_point: Option<Point>) -> Result<()> {
         if let Ok(mut map) = self.map.lock() {
-            let new_zoom =
-                (map.viewport().zoom + self.config.zoom_delta).clamp(self.config.min_zoom, self.config.max_zoom);
+            let new_zoom = (map.viewport().zoom + self.config.zoom_delta)
+                .clamp(self.config.min_zoom, self.config.max_zoom);
             map.zoom_to(new_zoom, focus_point)?;
 
             if let Some(callback) = &self.on_zoom_changed {
@@ -831,8 +884,8 @@ impl MapWidget {
     /// Zoom out
     pub fn zoom_out(&mut self, focus_point: Option<Point>) -> Result<()> {
         if let Ok(mut map) = self.map.lock() {
-            let new_zoom =
-                (map.viewport().zoom - self.config.zoom_delta).clamp(self.config.min_zoom, self.config.max_zoom);
+            let new_zoom = (map.viewport().zoom - self.config.zoom_delta)
+                .clamp(self.config.min_zoom, self.config.max_zoom);
             map.zoom_to(new_zoom, focus_point)?;
 
             if let Some(callback) = &self.on_zoom_changed {
@@ -912,7 +965,10 @@ impl MapWidget {
             // Process tile updates for visible tile layers (non-blocking)
             let viewport = map.viewport().clone();
             map.for_each_layer_mut(|layer| {
-                if let Some(tile_layer) = layer.as_any_mut().downcast_mut::<crate::layers::tile::TileLayer>() {
+                if let Some(tile_layer) = layer
+                    .as_any_mut()
+                    .downcast_mut::<crate::layers::tile::TileLayer>()
+                {
                     // Process completed downloads and queue new ones - all synchronous now
                     let _ = tile_layer.update_tiles(&viewport);
                 }
@@ -923,7 +979,10 @@ impl MapWidget {
         let mut tiles_loading = false;
         if let Ok(mut map) = self.map.lock() {
             map.for_each_layer_mut(|layer| {
-                if let Some(tile_layer) = layer.as_any_mut().downcast_mut::<crate::layers::tile::TileLayer>() {
+                if let Some(tile_layer) = layer
+                    .as_any_mut()
+                    .downcast_mut::<crate::layers::tile::TileLayer>()
+                {
                     if tile_layer.is_loading() {
                         tiles_loading = true;
                     }
@@ -956,39 +1015,6 @@ impl MapWidget {
     /// Check if widget has focus
     pub fn has_focus(&self) -> bool {
         self.has_focus
-    }
-
-    /// Handle zoom animation and smooth transitions
-    fn handle_zoom_animation(&mut self, target_zoom: f64) {
-        if let Ok(mut map) = self.map.lock() {
-            let current_zoom = map.viewport().zoom;
-            let zoom_diff = (target_zoom - current_zoom).abs();
-            
-            // Only animate if zoom change is significant
-            if zoom_diff > 0.1 {
-                // Set the target zoom immediately for smooth UI
-                let _ = map.zoom_to(target_zoom, None);
-                
-                // Update tile layers with animation flag
-                let viewport = map.viewport().clone();
-                
-                // Update each tile layer with smooth zoom enabled
-                map.for_each_layer_mut(|layer| {
-                    if let Some(tile_layer) = layer.as_any_mut().downcast_mut::<crate::layers::tile::TileLayer>() {
-                        // Enable smooth zoom mode
-                        let mut options = tile_layer.options().clone();
-                        options.update_when_zooming = true;
-                        tile_layer.set_tile_options(options);
-                        
-                        // Update tiles with the new viewport
-                        let _ = tile_layer.update_tiles(&viewport);
-                    }
-                });
-                
-                // Request a repaint to show the animation
-                self.needs_repaint = true;
-            }
-        }
     }
 
     /// Decode image immediately (for small images only)

@@ -1,8 +1,4 @@
-use crate::{
-    core::viewport::Viewport, 
-    input::events::InputEvent, 
-    Result,
-};
+use crate::{core::viewport::Viewport, input::events::InputEvent, Result};
 
 #[cfg(feature = "render")]
 use crate::rendering::context::RenderContext;
@@ -37,12 +33,12 @@ pub trait LayerTrait: Send + Sync {
     fn set_visible(&mut self, visible: bool);
 
     /// Called when the layer is added to a map
-    fn on_add(&self, map: &mut crate::core::map::Map) -> Result<()> {
+    fn on_add(&self, _map: &mut crate::core::map::Map) -> Result<()> {
         Ok(())
     }
 
     /// Called when the layer is removed from a map
-    fn on_remove(&self, map: &mut crate::core::map::Map) -> Result<()> {
+    fn on_remove(&self, _map: &mut crate::core::map::Map) -> Result<()> {
         Ok(())
     }
 
@@ -57,12 +53,12 @@ pub trait LayerTrait: Send + Sync {
     }
 
     /// Handles input events
-    fn handle_input(&mut self, input: &InputEvent) -> Result<()> {
+    fn handle_input(&mut self, _input: &InputEvent) -> Result<()> {
         Ok(())
     }
 
     /// Updates the layer state (called each frame)
-    fn update(&mut self, delta_time: f64) -> Result<()> {
+    fn update(&mut self, _delta_time: f64) -> Result<()> {
         Ok(())
     }
 

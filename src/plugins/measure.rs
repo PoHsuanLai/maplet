@@ -1,12 +1,10 @@
 use crate::{
     core::{
-        bounds::Bounds,
-        geo::{LatLng, Point},
+        geo::Point,
         map::Map,
         viewport::Viewport,
     },
     input::events::InputEvent,
-    layers::vector::VectorLayer,
     plugins::base::PluginTrait,
     Result,
 };
@@ -17,7 +15,7 @@ use crate::rendering::context::RenderContext;
 #[cfg(feature = "egui")]
 use egui::Color32;
 
-use std::collections::HashMap;
+use crate::prelude::HashMap;
 
 /// Measurement tool types
 #[derive(Debug, Clone, PartialEq)]
@@ -204,7 +202,7 @@ impl MeasurePlugin {
             config: MeasureConfig::default(),
             state: MeasureState::Idle,
             current_tool: MeasureTool::Distance,
-            measurements: HashMap::new(),
+            measurements: HashMap::default(),
             active: false,
             measurement_counter: 0,
         }
@@ -216,7 +214,7 @@ impl MeasurePlugin {
             config,
             state: MeasureState::Idle,
             current_tool: MeasureTool::Distance,
-            measurements: HashMap::new(),
+            measurements: HashMap::default(),
             active: false,
             measurement_counter: 0,
         }
@@ -484,39 +482,6 @@ impl MeasurePlugin {
         self.active
     }
 
-    /// Handle input events
-    fn handle_input(&mut self, event: &InputEvent, viewport: &Viewport) -> Result<()> {
-        if !self.active || !self.config.enabled {
-            return Ok(());
-        }
-
-        match event {
-            InputEvent::Click { position } => {
-                let lat_lng = viewport.pixel_to_lat_lng(position);
-                let point = Point::new(lat_lng.lng, lat_lng.lat);
-
-                match &self.state {
-                    MeasureState::Idle => {
-                        self.start_measuring(point)?;
-                    }
-                    MeasureState::Measuring { .. } => {
-                        self.continue_measuring(point)?;
-                        self.finish_measuring()?;
-                    }
-                }
-            }
-            InputEvent::MouseMove { position } => {
-                if let MeasureState::Measuring { .. } = &self.state {
-                    let lat_lng = viewport.pixel_to_lat_lng(position);
-                    let point = Point::new(lat_lng.lng, lat_lng.lat);
-                    self.continue_measuring(point)?;
-                }
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
 }
 
 impl PluginTrait for MeasurePlugin {
@@ -532,7 +497,7 @@ impl PluginTrait for MeasurePlugin {
         Ok(())
     }
 
-    fn handle_input(&mut self, input: &InputEvent) -> Result<()> {
+    fn handle_input(&mut self, _input: &InputEvent) -> Result<()> {
         // This will be called by the map, but we need the viewport
         // So we'll handle input in the render method instead
         Ok(())
@@ -542,7 +507,7 @@ impl PluginTrait for MeasurePlugin {
         Ok(())
     }
 
-    fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    fn render(&mut self, context: &mut RenderContext, _viewport: &Viewport) -> Result<()> {
         if !self.active || !self.config.enabled {
             return Ok(());
         }

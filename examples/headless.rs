@@ -5,7 +5,7 @@ use maplet::{
 };
 
 /// Example of using maplet in headless mode without any UI
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> maplet::Result<()> {
     println!("🗺️ Maplet Headless Example");
     println!("==========================");
 
@@ -17,7 +17,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✅ Map created:");
     println!("   Center: {:.4}, {:.4}", center.lat, center.lng);
     println!("   Zoom: {}", map.viewport().zoom);
-    println!("   Size: {}x{}", map.viewport().size.x, map.viewport().size.y);
+    println!(
+        "   Size: {}x{}",
+        map.viewport().size.x,
+        map.viewport().size.y
+    );
 
     // Add a tile layer (this won't actually fetch tiles in headless mode)
     let tile_layer = TileLayer::openstreetmap("osm".to_string(), "OpenStreetMap".to_string());
@@ -26,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Perform some map operations
     println!("\n🎯 Performing map operations:");
-    
+
     // Set different views
     let locations = [
         ("New York", LatLng::new(40.7128, -74.0060), 11.0),
@@ -36,8 +40,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (name, location, zoom) in locations {
         map.set_view(location, zoom)?;
-        println!("   📍 {} - {:.4}, {:.4} at zoom {}", name, location.lat, location.lng, zoom);
-        
+        println!(
+            "   📍 {} - {:.4}, {:.4} at zoom {}",
+            name, location.lat, location.lng, zoom
+        );
+
         // Simulate some updates
         map.update(16.67)?; // ~60fps frame time
     }
@@ -54,15 +61,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let old_center = map.viewport().center;
         map.pan(Point::new(dx, dy))?;
         let new_center = map.viewport().center;
-        
-        println!("   Pan by ({}, {}) - Center moved from ({:.4}, {:.4}) to ({:.4}, {:.4})", 
-                 dx, dy, old_center.lat, old_center.lng, new_center.lat, new_center.lng);
+
+        println!(
+            "   Pan by ({}, {}) - Center moved from ({:.4}, {:.4}) to ({:.4}, {:.4})",
+            dx, dy, old_center.lat, old_center.lng, new_center.lat, new_center.lng
+        );
     }
 
     // Test zoom operations
     println!("\n🔍 Testing zoom operations:");
     let zoom_levels = [10.0, 15.0, 8.0, 12.0];
-    
+
     for zoom in zoom_levels {
         map.zoom_to(zoom, None)?;
         println!("   Zoomed to level: {}", zoom);
@@ -81,7 +90,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Final state
     println!("\n📊 Final map state:");
     let viewport = map.viewport();
-    println!("   Center: {:.6}, {:.6}", viewport.center.lat, viewport.center.lng);
+    println!(
+        "   Center: {:.6}, {:.6}",
+        viewport.center.lat, viewport.center.lng
+    );
     println!("   Zoom: {:.2}", viewport.zoom);
     println!("   Size: {:.0}x{:.0}", viewport.size.x, viewport.size.y);
 
@@ -90,4 +102,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Perfect for server-side map processing, testing, or CLI tools.");
 
     Ok(())
-} 
+}

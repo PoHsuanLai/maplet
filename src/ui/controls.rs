@@ -1,11 +1,8 @@
-use crate::core::geo::{LatLng, Point};
+use crate::core::geo::LatLng;
 use crate::core::viewport::Viewport;
+use crate::prelude::HashMap;
 use crate::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
-#[cfg(feature = "egui")]
-use egui::{Color32, FontId, Pos2, Rect, Vec2};
 
 /// Different types of map controls
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -318,10 +315,7 @@ impl Default for MeasurementConfig {
                 margin: 160.0,
                 ..ControlConfig::default()
             },
-            available_tools: vec![
-                MeasurementTool::Distance,
-                MeasurementTool::Area,
-            ],
+            available_tools: vec![MeasurementTool::Distance, MeasurementTool::Area],
             units: MeasurementUnits::Auto,
             show_area: true,
             show_perimeter: true,
@@ -392,7 +386,7 @@ impl MapControls {
             drawing_tools: None,
             measurement: None,
             location: None,
-            custom_controls: HashMap::new(),
+            custom_controls: HashMap::default(),
         }
     }
 
@@ -544,7 +538,6 @@ impl Control for ZoomControl {
 /// Layer control implementation
 pub struct LayerControl {
     config: LayerControlConfig,
-    collapsed: bool,
     available_layers: Vec<LayerInfo>,
 }
 
@@ -559,7 +552,6 @@ pub struct LayerInfo {
 impl LayerControl {
     pub fn new(config: LayerControlConfig) -> Self {
         Self {
-            collapsed: config.collapsed,
             config,
             available_layers: Vec::new(),
         }
@@ -601,15 +593,11 @@ impl Control for LayerControl {
 /// Compass implementation
 pub struct Compass {
     config: CompassConfig,
-    bearing: f64,
 }
 
 impl Compass {
     pub fn new(config: CompassConfig) -> Self {
-        Self {
-            config,
-            bearing: 0.0,
-        }
+        Self { config }
     }
 }
 
@@ -639,7 +627,6 @@ impl Control for Compass {
 /// Scale bar implementation
 pub struct ScaleBar {
     config: ScaleBarConfig,
-    current_scale: f64,
     scale_text: String,
 }
 
@@ -647,15 +634,14 @@ impl ScaleBar {
     pub fn new(config: ScaleBarConfig) -> Self {
         Self {
             config,
-            current_scale: 1.0,
             scale_text: "1 km".to_string(),
         }
     }
 
     fn calculate_scale(&mut self, viewport: &Viewport) {
         let resolution = viewport.resolution();
-        
-                 // Calculate scale for different units
+
+        // Calculate scale for different units
         if self.config.metric {
             let meters = self.config.max_width as f64 * resolution;
             if meters < 1000.0 {
@@ -854,7 +840,6 @@ pub struct LocationControl {
     config: LocationConfig,
     current_location: Option<LatLng>,
     tracking: bool,
-    accuracy: Option<f64>,
 }
 
 impl LocationControl {
@@ -863,7 +848,6 @@ impl LocationControl {
             config,
             current_location: None,
             tracking: false,
-            accuracy: None,
         }
     }
 

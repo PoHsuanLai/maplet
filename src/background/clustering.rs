@@ -3,14 +3,13 @@
 //! This module provides background tasks for spatial clustering operations
 //! to keep CPU-intensive clustering computations off the main thread.
 
-use std::sync::Arc;
 use crate::background::tasks::{BackgroundTask, TaskPriority};
-use crate::spatial::{clustering::{Cluster, ClusteringConfig}, index::SpatialItem};
-use crate::core::{bounds::Bounds, geo::Point};
+use crate::core::bounds::Bounds;
+use crate::spatial::{
+    clustering::{Cluster, ClusteringConfig},
+    index::SpatialItem,
+};
 use crate::Result;
-
-#[cfg(feature = "debug")]
-use log::{debug, info};
 
 /// Task for performing marker clustering in the background
 pub struct ClusterMarkersTask<T: Clone + Send + Sync + 'static> {
@@ -47,7 +46,11 @@ impl<T: Clone + Send + Sync + 'static> ClusterMarkersTask<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BackgroundTask for ClusterMarkersTask<T> {
-    fn execute(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>> {
+    fn execute(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             let items = self.items.clone();
             let viewport_bounds = self.viewport_bounds.clone();
@@ -57,11 +60,11 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for ClusterMarkersTask<T> 
             #[cfg(feature = "tokio-runtime")]
             let result = tokio::task::spawn_blocking(move || {
                 // Perform clustering computation
-                let clusters = cluster_items(items, viewport_bounds, zoom_level, config);
-                clusters
-            }).await
+                cluster_items(items, viewport_bounds, zoom_level, config)
+            })
+            .await
             .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?;
-            
+
             #[cfg(not(feature = "tokio-runtime"))]
             let result = {
                 // Perform clustering computation synchronously
@@ -123,7 +126,11 @@ impl<T: Clone + Send + Sync + 'static> UpdateClustersTask<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BackgroundTask for UpdateClustersTask<T> {
-    fn execute(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>> {
+    fn execute(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             let existing_clusters = self.existing_clusters.clone();
             let new_viewport_bounds = self.new_viewport_bounds.clone();
@@ -138,9 +145,9 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for UpdateClustersTask<T> 
                 }
 
                 // Re-cluster with new parameters
-                let new_clusters = cluster_items(all_items, new_viewport_bounds, new_zoom_level, config);
-                new_clusters
-            }).await
+                cluster_items(all_items, new_viewport_bounds, new_zoom_level, config)
+            })
+            .await
             .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?;
 
             Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
@@ -177,9 +184,7 @@ fn cluster_items<T: Clone>(
         return items
             .into_iter()
             .enumerate()
-            .map(|(i, item)| {
-                Cluster::new(format!("single_{}", i), vec![item], zoom_level)
-            })
+            .map(|(i, item)| Cluster::new(format!("single_{}", i), vec![item], zoom_level))
             .collect();
     }
 
@@ -199,9 +204,7 @@ fn cluster_items<T: Clone>(
         let grid_x = (center.x / grid_size).floor() as i32;
         let grid_y = (center.y / grid_size).floor() as i32;
 
-        grid.entry((grid_x, grid_y))
-            .or_default()
-            .push(item);
+        grid.entry((grid_x, grid_y)).or_default().push(item);
     }
 
     // Create clusters from grid cells
@@ -260,6 +263,12 @@ pub mod tasks {
         new_zoom_level: f64,
         config: ClusteringConfig,
     ) -> UpdateClustersTask<T> {
-        UpdateClustersTask::new(task_id, existing_clusters, new_viewport_bounds, new_zoom_level, config)
+        UpdateClustersTask::new(
+            task_id,
+            existing_clusters,
+            new_viewport_bounds,
+            new_zoom_level,
+            config,
+        )
     }
 }

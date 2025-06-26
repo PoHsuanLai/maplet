@@ -1,8 +1,8 @@
+use crate::prelude::HashMap;
 use crate::{
     core::geo::Point,
     input::events::{InputEvent, TouchEventType, TouchPoint},
 };
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Different types of gestures that can be recognized
@@ -95,6 +95,7 @@ impl Default for GestureConfig {
 /// Touch tracking information
 #[derive(Debug, Clone)]
 struct TouchInfo {
+    #[allow(dead_code)] // Used for future touch tracking implementation
     id: u64,
     start_position: Point,
     current_position: Point,
@@ -112,8 +113,7 @@ pub struct GestureRecognizer {
     mouse_state: MouseState,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 struct MouseState {
     is_pressed: bool,
     start_position: Option<Point>,
@@ -121,13 +121,12 @@ struct MouseState {
     start_time: Option<Instant>,
 }
 
-
 impl GestureRecognizer {
     pub fn new() -> Self {
         Self {
             enabled: true,
             config: GestureConfig::default(),
-            active_touches: HashMap::new(),
+            active_touches: HashMap::default(),
             current_gesture: None,
             last_tap: None,
             mouse_state: MouseState::default(),
@@ -138,7 +137,7 @@ impl GestureRecognizer {
         Self {
             enabled: true,
             config,
-            active_touches: HashMap::new(),
+            active_touches: HashMap::default(),
             current_gesture: None,
             last_tap: None,
             mouse_state: MouseState::default(),

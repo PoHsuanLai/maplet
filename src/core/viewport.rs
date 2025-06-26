@@ -66,19 +66,20 @@ impl Viewport {
     pub fn project(&self, lat_lng: &LatLng, zoom: Option<f64>) -> Point {
         let z = zoom.unwrap_or(self.zoom);
         let scale = 256.0 * 2_f64.powf(z);
-        
+
         // Spherical Mercator projection (matches Leaflet's SphericalMercator)
         let d = std::f64::consts::PI / 180.0;
         let max_lat = 85.0511287798; // Leaflet's SphericalMercator.MAX_LATITUDE
         let lat = lat_lng.lat.clamp(-max_lat, max_lat);
         let lat_rad = lat * d;
         let sin_lat = lat_rad.sin();
-        
+
         // Leaflet's transformation: scale = 0.5 / (π * R), offset = 0.5
         // Where R = 6378137 (earth radius)
         let x = (lat_lng.lng + 180.0) / 360.0 * scale;
-        let y = (0.5 - 0.25 * ((1.0 + sin_lat) / (1.0 - sin_lat)).ln() / std::f64::consts::PI) * scale;
-        
+        let y =
+            (0.5 - 0.25 * ((1.0 + sin_lat) / (1.0 - sin_lat)).ln() / std::f64::consts::PI) * scale;
+
         Point::new(x, y)
     }
 
@@ -87,23 +88,26 @@ impl Viewport {
     pub fn unproject(&self, point: &Point, zoom: Option<f64>) -> LatLng {
         let z = zoom.unwrap_or(self.zoom);
         let scale = 256.0 * 2_f64.powf(z);
-        
+
         let d = 180.0 / std::f64::consts::PI;
         let lng = point.x / scale * 360.0 - 180.0;
-        
+
         let y_normalized = point.y / scale;
-        let lat_rad = std::f64::consts::FRAC_PI_2 - 2.0 * ((0.5 - y_normalized) * 2.0 * std::f64::consts::PI).exp().atan();
+        let lat_rad = std::f64::consts::FRAC_PI_2
+            - 2.0
+                * ((0.5 - y_normalized) * 2.0 * std::f64::consts::PI)
+                    .exp()
+                    .atan();
         let lat = lat_rad * d;
-        
+
         LatLng::new(lat, lng)
     }
 
     /// Gets or calculates the pixel origin for this viewport
     /// This is used to keep pixel coordinates manageable and avoid precision issues
     pub fn get_pixel_origin(&self) -> Point {
-        self.pixel_origin.unwrap_or_else(|| {
-            self.project(&self.center, None).floor()
-        })
+        self.pixel_origin
+            .unwrap_or_else(|| self.project(&self.center, None).floor())
     }
 
     /// Updates the pixel origin based on current center
@@ -144,19 +148,13 @@ impl Viewport {
     pub fn layer_point_to_container_point(&self, point: &Point) -> Point {
         // In a simple case, this is just centered on the viewport
         // In Leaflet, this adds the map pane position, but for now we'll center it
-        Point::new(
-            point.x + self.size.x / 2.0,
-            point.y + self.size.y / 2.0
-        )
+        Point::new(point.x + self.size.x / 2.0, point.y + self.size.y / 2.0)
     }
 
     /// Converts container point to layer point
     /// This matches Leaflet's containerPointToLayerPoint method
     pub fn container_point_to_layer_point(&self, point: &Point) -> Point {
-        Point::new(
-            point.x - self.size.x / 2.0,
-            point.y - self.size.y / 2.0
-        )
+        Point::new(point.x - self.size.x / 2.0, point.y - self.size.y / 2.0)
     }
 
     /// Pans the viewport by the given pixel offset
@@ -173,8 +171,8 @@ impl Viewport {
         let new_zoom = zoom.clamp(self.min_zoom, self.max_zoom);
         let old_zoom = self.zoom;
 
-        // No-op if zoom does not change
-        if (new_zoom - old_zoom).abs() < f64::EPSILON {
+        // No-op if zoom does not change significantly
+        if (new_zoom - old_zoom).abs() < 0.001 {
             return;
         }
 
@@ -198,14 +196,47 @@ impl Viewport {
         self.pan(offset);
     }
 
-    /// Zooms in by one level
+    /// Smooth zoom animation method that handles intermediate zoom levels
+    /// This is like Leaflet's _animateZoom method
+    pub fn animate_zoom_to(&mut self, target_zoom: f64, focus_point: Option<Point>, progress: f64) {
+        if progress >= 1.0 {
+            self.zoom_to(target_zoom, focus_point);
+            return;
+        }
+
+        let start_zoom = self.zoom;
+        let zoom_diff = target_zoom - start_zoom;
+
+        // Use eased progress for smoother animation
+        let eased_progress = self.ease_out_cubic(progress);
+        let eased_zoom = start_zoom + (zoom_diff * eased_progress);
+
+        self.zoom_to(eased_zoom, focus_point);
+    }
+
+    /// Ease out cubic function for smooth animations
+    fn ease_out_cubic(&self, t: f64) -> f64 {
+        let t = t - 1.0;
+        t * t * t + 1.0
+    }
+
+    /// Zooms in by one level, optionally around a focus point
     pub fn zoom_in(&mut self, focus_point: Option<Point>) {
         self.zoom_to(self.zoom + 1.0, focus_point);
     }
 
-    /// Zooms out by one level  
+    /// Zooms out by one level, optionally around a focus point
     pub fn zoom_out(&mut self, focus_point: Option<Point>) {
         self.zoom_to(self.zoom - 1.0, focus_point);
+    }
+
+    /// Smooth wheel zoom that handles fractional zoom levels
+    /// This matches Leaflet's continuous zoom behavior
+    pub fn wheel_zoom(&mut self, delta: f64, focus_point: Point) {
+        // Scale delta to be more reasonable (like Leaflet's wheel zoom)
+        let zoom_delta = delta * 0.2; // Adjust sensitivity
+        let new_zoom = (self.zoom + zoom_delta).clamp(self.min_zoom, self.max_zoom);
+        self.zoom_to(new_zoom, Some(focus_point));
     }
 
     /// Gets the current viewport bounds in geographical coordinates

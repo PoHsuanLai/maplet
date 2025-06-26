@@ -93,6 +93,7 @@ geo-types = "0.7"
 lru = "0.10"
 rstar = "0.11"
 crossbeam-channel = "0.5"
+fxhash = "0.2"
 
 # Optional debugging (feature-gated)
 log = { version = "0.4", optional = true }

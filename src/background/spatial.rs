@@ -1,7 +1,6 @@
-use std::sync::Arc;
 use crate::background::tasks::{BackgroundTask, TaskPriority};
-use crate::spatial::index::{SpatialIndex, SpatialItem};
 use crate::core::{bounds::Bounds, geo::Point};
+use crate::spatial::index::{SpatialIndex, SpatialItem};
 use crate::Result;
 
 /// Task for building a spatial index from a large set of items
@@ -27,14 +26,18 @@ impl<T: Clone + Send + Sync + 'static> BuildSpatialIndexTask<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BackgroundTask for BuildSpatialIndexTask<T> {
-    fn execute(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>> {
+    fn execute(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             let items = self.items.clone();
 
             #[cfg(feature = "tokio-runtime")]
             let result = tokio::task::spawn_blocking(move || {
                 let mut index = SpatialIndex::new();
-                
+
                 for item in items {
                     if let Err(e) = index.insert(item) {
                         return Err(e);
@@ -42,13 +45,14 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BuildSpatialIndexTask<
                 }
 
                 Ok(index)
-            }).await
+            })
+            .await
             .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))??;
-            
+
             #[cfg(not(feature = "tokio-runtime"))]
             let result = {
                 let mut index = SpatialIndex::new();
-                
+
                 for item in items {
                     if let Err(e) = index.insert(item) {
                         return Err(e);
@@ -103,7 +107,11 @@ impl<T: Clone + Send + Sync + 'static> SpatialQueryTask<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BackgroundTask for SpatialQueryTask<T> {
-    fn execute(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>> {
+    fn execute(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             let index = self.index.clone();
             let query_bounds = self.query_bounds.clone();
@@ -114,9 +122,10 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for SpatialQueryTask<T> {
                 // Clone the items to own them
                 let owned_items: Vec<SpatialItem<T>> = items.into_iter().cloned().collect();
                 owned_items
-            }).await
+            })
+            .await
             .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?;
-            
+
             #[cfg(not(feature = "tokio-runtime"))]
             let result = {
                 let items = index.query(&query_bounds);
@@ -170,7 +179,11 @@ impl<T: Clone + Send + Sync + 'static> RadiusQueryTask<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BackgroundTask for RadiusQueryTask<T> {
-    fn execute(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>> {
+    fn execute(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             let index = self.index.clone();
             let center = self.center;
@@ -182,9 +195,10 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for RadiusQueryTask<T> {
                 // Clone the items to own them
                 let owned_items: Vec<SpatialItem<T>> = items.into_iter().cloned().collect();
                 owned_items
-            }).await
+            })
+            .await
             .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?;
-            
+
             #[cfg(not(feature = "tokio-runtime"))]
             let result = {
                 let items = index.query_radius(&center, radius);
@@ -223,7 +237,7 @@ pub struct BatchUpdateIndexTask<T: Clone + Send + Sync + 'static> {
 #[derive(Debug, Clone)]
 pub enum IndexUpdate<T> {
     Insert(SpatialItem<T>),
-    Remove(String), // Remove by ID
+    Remove(String),                 // Remove by ID
     Update(String, SpatialItem<T>), // Update by ID
 }
 
@@ -244,7 +258,11 @@ impl<T: Clone + Send + Sync + 'static> BatchUpdateIndexTask<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BackgroundTask for BatchUpdateIndexTask<T> {
-    fn execute(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>> {
+    fn execute(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>,
+    > {
         Box::pin(async move {
             let mut index = self.index.clone();
             let updates = self.updates.clone();
@@ -265,7 +283,8 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BatchUpdateIndexTask<T
                     }
                 }
                 Ok(index)
-            }).await
+            })
+            .await
             .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))??;
 
             Ok(Box::new(result) as Box<dyn std::any::Any + Send>)

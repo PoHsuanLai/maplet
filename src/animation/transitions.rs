@@ -312,6 +312,9 @@ impl Transition {
     }
 }
 
+/// Type alias for viewport update callbacks
+pub type ViewportUpdateFn = Box<dyn Fn(&Viewport) + Send + Sync>;
+
 /// Manager for viewport transitions
 pub struct TransitionManager {
     /// Currently active transition
@@ -322,6 +325,8 @@ pub struct TransitionManager {
     transition_queue: Vec<Transition>,
     /// Whether to interrupt current transition when starting a new one
     interrupt_on_new: bool,
+    /// Optional callback for viewport updates
+    pub on_update: Option<ViewportUpdateFn>,
 }
 
 impl TransitionManager {
@@ -331,6 +336,7 @@ impl TransitionManager {
             tween_manager: TweenManager::new(),
             transition_queue: Vec::new(),
             interrupt_on_new: true,
+            on_update: None,
         }
     }
 

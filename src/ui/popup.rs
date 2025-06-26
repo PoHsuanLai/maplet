@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "egui")]
-use egui::{Color32, FontId, Pos2, Rect, Vec2};
+use egui::{Color32, FontId, Vec2};
 
 /// Different types of popups
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PopupType {
     /// Simple text popup
-    Text, 
+    Text,
     /// Rich HTML-like content popup
     Rich,
     /// Form popup with inputs
@@ -198,8 +198,13 @@ pub enum PopupAction {
 pub enum PopupEvent {
     Opened,
     Closed,
-    ButtonClicked { button_id: String, action: PopupAction },
-    FormSubmitted { form_data: std::collections::HashMap<String, String> },
+    ButtonClicked {
+        button_id: String,
+        action: PopupAction,
+    },
+    FormSubmitted {
+        form_data: std::collections::HashMap<String, String>,
+    },
     Dismissed,
 }
 
@@ -266,12 +271,7 @@ impl Popup {
     }
 
     /// Create a new confirmation popup
-    pub fn new_confirmation(
-        id: String,
-        position: LatLng,
-        title: String,
-        message: String,
-    ) -> Self {
+    pub fn new_confirmation(id: String, position: LatLng, title: String, message: String) -> Self {
         Self {
             id,
             anchor_position: position,
@@ -308,7 +308,7 @@ impl Popup {
                     title.clone()
                 } else {
                     "Info".to_string()
-                }
+                },
             ),
             sections: vec![PopupSection {
                 title: None,
@@ -447,10 +447,7 @@ impl Popup {
     /// Get animation scale for rendering
     pub fn get_animation_scale(&self) -> f32 {
         match &self.animation {
-            PopupAnimation::Scale { progress } => {
-                let scale = 0.3 + *progress * 0.7;
-                scale
-            }
+            PopupAnimation::Scale { progress } => 0.3 + *progress * 0.7,
             PopupAnimation::Bounce { progress } => {
                 let bounce = (progress * std::f32::consts::PI * 4.0).sin();
                 1.0 + bounce * 0.1 * (1.0 - progress)
@@ -551,12 +548,7 @@ impl PopupManager {
     }
 
     /// Show a simple text popup
-    pub fn show_text_popup(
-        &mut self,
-        id: String,
-        position: LatLng,
-        text: String,
-    ) -> Result<()> {
+    pub fn show_text_popup(&mut self, id: String, position: LatLng, text: String) -> Result<()> {
         let mut popup = Popup::new_text(id, position, text);
         popup.show(true)?;
         self.add_popup(popup)
@@ -571,8 +563,8 @@ impl PopupManager {
         message: String,
         callback: impl Fn(PopupEvent) -> Result<()> + Send + Sync + 'static,
     ) -> Result<()> {
-        let mut popup = Popup::new_confirmation(id, position, title, message)
-            .with_callback(callback);
+        let mut popup =
+            Popup::new_confirmation(id, position, title, message).with_callback(callback);
         popup.show(true)?;
         self.add_popup(popup)
     }
@@ -585,8 +577,8 @@ impl PopupManager {
         title: String,
         message: String,
     ) -> Result<()> {
-        let mut popup = Popup::new_info(id, position, title, message)
-            .with_auto_close(Duration::from_secs(3));
+        let mut popup =
+            Popup::new_info(id, position, title, message).with_auto_close(Duration::from_secs(3));
         popup.show(true)?;
         self.add_popup(popup)
     }

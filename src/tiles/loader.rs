@@ -1,12 +1,13 @@
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use crossbeam_channel::{Receiver, Sender, unbounded};
 
+use super::source::TileSource;
 use crate::core::geo::TileCoord;
 use crate::core::viewport::Viewport;
-use super::source::TileSource;
+use crate::prelude::HashSet;
 use crate::Result;
 use once_cell::sync::Lazy;
 
@@ -128,16 +129,16 @@ impl MovementPattern {
     /// Update movement pattern with new viewport
     pub fn update(&mut self, viewport: &Viewport) {
         let now = Instant::now();
-        
+
         // Clean old entries (older than 5 seconds)
         let cutoff = now - Duration::from_secs(5);
         self.recent_centers.retain(|(_, time)| *time > cutoff);
         self.recent_zooms.retain(|(_, time)| *time > cutoff);
-        
+
         // Add new entries
         self.recent_centers.push_back((viewport.center, now));
         self.recent_zooms.push_back((viewport.zoom, now));
-        
+
         // Keep reasonable limits
         if self.recent_centers.len() > 10 {
             self.recent_centers.pop_front();
@@ -145,42 +146,42 @@ impl MovementPattern {
         if self.recent_zooms.len() > 5 {
             self.recent_zooms.pop_front();
         }
-        
+
         // Calculate velocity and prediction
         self.calculate_velocity();
         self.predict_next_position();
     }
-    
+
     fn calculate_velocity(&mut self) {
         if self.recent_centers.len() < 2 {
             self.velocity = None;
             return;
         }
-        
+
         let recent: Vec<_> = self.recent_centers.iter().collect();
         let mut total_velocity = crate::core::geo::Point::new(0.0, 0.0);
         let mut count = 0;
-        
+
         for i in 1..recent.len() {
             let (prev_pos, prev_time) = recent[i - 1];
             let (curr_pos, curr_time) = recent[i];
-            
+
             let time_diff = curr_time.duration_since(*prev_time).as_secs_f64();
             if time_diff > 0.0 {
                 let lat_diff = curr_pos.lat - prev_pos.lat;
                 let lng_diff = curr_pos.lng - prev_pos.lng;
-                
+
                 // Convert to approximate pixel velocity (rough approximation)
                 let pixel_per_degree = 111_000.0; // meters per degree at equator
                 let velocity_x = lng_diff * pixel_per_degree / time_diff;
                 let velocity_y = lat_diff * pixel_per_degree / time_diff;
-                
+
                 total_velocity.x += velocity_x;
                 total_velocity.y += velocity_y;
                 count += 1;
             }
         }
-        
+
         if count > 0 {
             self.velocity = Some(crate::core::geo::Point::new(
                 total_velocity.x / count as f64,
@@ -188,22 +189,26 @@ impl MovementPattern {
             ));
         }
     }
-    
+
     fn predict_next_position(&mut self) {
         if let Some(velocity) = self.velocity {
             if let Some((last_center, _last_time)) = self.recent_centers.back() {
                 // Predict position 1 second ahead
                 let prediction_time = 1.0;
                 let pixel_per_degree = 111_000.0;
-                
-                let predicted_lat = last_center.lat + (velocity.y * prediction_time) / pixel_per_degree;
-                let predicted_lng = last_center.lng + (velocity.x * prediction_time) / pixel_per_degree;
-                
-                self.predicted_center = Some(crate::core::geo::LatLng::new(predicted_lat, predicted_lng));
-                
+
+                let predicted_lat =
+                    last_center.lat + (velocity.y * prediction_time) / pixel_per_degree;
+                let predicted_lng =
+                    last_center.lng + (velocity.x * prediction_time) / pixel_per_degree;
+
+                self.predicted_center =
+                    Some(crate::core::geo::LatLng::new(predicted_lat, predicted_lng));
+
                 // Calculate confidence based on velocity consistency
                 let speed = (velocity.x.powi(2) + velocity.y.powi(2)).sqrt();
-                self.prediction_confidence = if speed > 10.0 { // Moving fast enough to predict
+                self.prediction_confidence = if speed > 10.0 {
+                    // Moving fast enough to predict
                     (speed / 1000.0).min(1.0) // Higher speed = higher confidence, capped at 1.0
                 } else {
                     0.0
@@ -211,33 +216,34 @@ impl MovementPattern {
             }
         }
     }
-    
+
     /// Get tiles to prefetch based on movement prediction
     pub fn get_prefetch_tiles(&self, current_viewport: &Viewport) -> Vec<TileCoord> {
         let mut prefetch_tiles = Vec::new();
-        
+
         if let Some(predicted_center) = self.predicted_center {
             if self.prediction_confidence > 0.3 {
                 // Get tiles for predicted viewport
                 let zoom = current_viewport.zoom.floor() as u8;
                 let tiles_per_axis = 1u32 << zoom;
-                
+
                 // Convert predicted center to tile coordinates
                 let lat_rad = predicted_center.lat.to_radians();
                 let x = (predicted_center.lng + 180.0) / 360.0 * tiles_per_axis as f64;
                 let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI)
-                    / 2.0 * tiles_per_axis as f64;
-                
+                    / 2.0
+                    * tiles_per_axis as f64;
+
                 let center_x = x as u32;
                 let center_y = y as u32;
-                
+
                 // Add surrounding tiles
                 let radius = 2; // Prefetch 2 tiles in each direction
-                for dx in -(radius as i32)..=(radius as i32) {
-                    for dy in -(radius as i32)..=(radius as i32) {
+                for dx in -radius..=radius {
+                    for dy in -radius..=radius {
                         let tile_x = ((center_x as i32 + dx) as u32) % tiles_per_axis;
                         let tile_y = ((center_y as i32 + dy).max(0) as u32).min(tiles_per_axis - 1);
-                        
+
                         prefetch_tiles.push(TileCoord {
                             x: tile_x,
                             y: tile_y,
@@ -247,7 +253,7 @@ impl MovementPattern {
                 }
             }
         }
-        
+
         prefetch_tiles
     }
 }
@@ -267,9 +273,9 @@ pub struct NetworkMetrics {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NetworkCondition {
-    Good,    // < 500ms average
-    Fair,    // 500ms - 2s average
-    Poor,    // > 2s average
+    Good, // < 500ms average
+    Fair, // 500ms - 2s average
+    Poor, // > 2s average
 }
 
 impl Default for NetworkMetrics {
@@ -287,56 +293,55 @@ impl NetworkMetrics {
     /// Record a successful download
     pub fn record_success(&mut self, duration: Duration) {
         let now = Instant::now();
-        
+
         // Clean old entries (older than 30 seconds)
         let cutoff = now - Duration::from_secs(30);
-        self.recent_download_times.retain(|(_, time)| *time > cutoff);
-        
+        self.recent_download_times
+            .retain(|(_, time)| *time > cutoff);
+
         // Add new entry
         self.recent_download_times.push_back((duration, now));
-        
+
         // Keep reasonable limit
         if self.recent_download_times.len() > 20 {
             self.recent_download_times.pop_front();
         }
-        
+
         // Update average
         self.update_average();
         self.update_condition();
     }
-    
+
     /// Record a failed download
     pub fn record_failure(&mut self) {
         let now = Instant::now();
-        
+
         // Clean old failures (older than 30 seconds)
         let cutoff = now - Duration::from_secs(30);
         self.recent_failures.retain(|time| *time > cutoff);
-        
+
         // Add new failure
         self.recent_failures.push_back(now);
-        
+
         // Keep reasonable limit
         if self.recent_failures.len() > 10 {
             self.recent_failures.pop_front();
         }
-        
+
         self.update_condition();
     }
-    
+
     fn update_average(&mut self) {
         if !self.recent_download_times.is_empty() {
             let total: Duration = self.recent_download_times.iter().map(|(d, _)| *d).sum();
             self.average_download_time = total / self.recent_download_times.len() as u32;
         }
     }
-    
+
     fn update_condition(&mut self) {
         let failure_rate = self.recent_failures.len() as f64 / 10.0; // Out of last 10 attempts
-        
-        if failure_rate > 0.3 {
-            self.condition = NetworkCondition::Poor;
-        } else if self.average_download_time > Duration::from_secs(2) {
+
+        if failure_rate > 0.3 || self.average_download_time > Duration::from_secs(2) {
             self.condition = NetworkCondition::Poor;
         } else if self.average_download_time > Duration::from_millis(500) {
             self.condition = NetworkCondition::Fair;
@@ -344,7 +349,7 @@ impl NetworkMetrics {
             self.condition = NetworkCondition::Good;
         }
     }
-    
+
     /// Get adjusted concurrency limit based on network condition
     pub fn get_concurrency_limit(&self, base_limit: usize) -> usize {
         match self.condition {
@@ -399,8 +404,6 @@ pub struct TileLoader {
     adaptive_config: Option<AdaptiveConfig>,
     /// Movement pattern tracking
     movement_pattern: Arc<Mutex<MovementPattern>>,
-    /// Network performance metrics
-    network_metrics: Arc<Mutex<NetworkMetrics>>,
     /// Last known viewport for comparison
     last_viewport: Arc<Mutex<Option<Viewport>>>,
     /// Currently prefetched tiles
@@ -416,7 +419,9 @@ impl TileLoader {
         // Start the background worker
         let worker_config = config.clone();
         crate::runtime::spawn(async move {
-            TileWorker::new(task_rx, result_tx, worker_config).run().await;
+            TileWorker::new(task_rx, result_tx, worker_config)
+                .run()
+                .await;
         });
 
         Self {
@@ -426,9 +431,8 @@ impl TileLoader {
             sequence_counter: std::sync::atomic::AtomicU64::new(0),
             adaptive_config: None,
             movement_pattern: Arc::new(Mutex::new(MovementPattern::default())),
-            network_metrics: Arc::new(Mutex::new(NetworkMetrics::default())),
             last_viewport: Arc::new(Mutex::new(None)),
-            prefetch_tiles: Arc::new(Mutex::new(HashSet::new())),
+            prefetch_tiles: Arc::new(Mutex::new(HashSet::default())),
         }
     }
 
@@ -444,28 +448,33 @@ impl TileLoader {
         coords: Vec<TileCoord>,
         priority: TilePriority,
     ) -> Result<()> {
-        let sequence = self.sequence_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        
+        let sequence = self
+            .sequence_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         // Create tasks for all tiles in parallel
-        let tasks: Result<Vec<_>> = coords.into_iter().map(|coord| {
-                         let url = source.url(coord);
-            Ok(TileTask {
-                coord,
-                url,
-                priority,
-                sequence,
+        let tasks: Result<Vec<_>> = coords
+            .into_iter()
+            .map(|coord| {
+                let url = source.url(coord);
+                Ok(TileTask {
+                    coord,
+                    url,
+                    priority,
+                    sequence,
+                })
             })
-        }).collect();
-        
+            .collect();
+
         let tasks = tasks?;
-        
+
         // Send all tasks in a batch - they will be processed concurrently
         for task in tasks {
             if let Err(e) = self.task_tx.send(task) {
                 return Err(format!("Failed to queue tile batch: {}", e).into());
             }
         }
-        
+
         Ok(())
     }
 
@@ -502,7 +511,7 @@ impl TileLoader {
     pub fn has_pending_results(&self) -> bool {
         !self.result_rx.is_empty()
     }
-    
+
     /// Create a new tile loader with adaptive configuration
     pub fn with_adaptive_config(config: TileLoaderConfig, adaptive_config: AdaptiveConfig) -> Self {
         let mut loader = Self::new(config);
@@ -516,21 +525,21 @@ impl TileLoader {
             if !adaptive_config.enabled {
                 return;
             }
-            
+
             // Update movement pattern
             if let Ok(mut pattern) = self.movement_pattern.lock() {
                 pattern.update(viewport);
-                
+
                 // Get prefetch tiles if confidence is high enough
                 if pattern.prediction_confidence >= adaptive_config.min_prefetch_confidence {
                     let prefetch_tiles = pattern.get_prefetch_tiles(viewport);
-                    
+
                     // Limit prefetch tiles
                     let limited_tiles: Vec<_> = prefetch_tiles
                         .into_iter()
                         .take(adaptive_config.max_prefetch_tiles)
                         .collect();
-                    
+
                     // Update prefetch set
                     if let Ok(mut prefetch_set) = self.prefetch_tiles.lock() {
                         prefetch_set.clear();
@@ -538,43 +547,46 @@ impl TileLoader {
                     }
                 }
             }
-            
+
             // Store last viewport for comparison
             if let Ok(mut last) = self.last_viewport.lock() {
                 *last = Some(viewport.clone());
             }
         }
     }
-    
+
     /// Get adaptive priority for a tile based on viewport and zoom
     pub fn get_adaptive_priority(&self, coord: &TileCoord, viewport: &Viewport) -> TilePriority {
         // Base priority calculation
         let zoom_diff = (coord.z as f64 - viewport.zoom).abs();
-        
+
         if zoom_diff > 2.0 {
             return TilePriority::Background;
         }
-        
+
         // Calculate distance from viewport center
         let viewport_bounds = viewport.bounds();
         let tile_center = self.tile_coord_to_lat_lng(coord);
-        
+
         let viewport_center = viewport.center;
-        let distance = ((tile_center.lat - viewport_center.lat).powi(2) 
-                      + (tile_center.lng - viewport_center.lng).powi(2)).sqrt();
-        
+        let distance = ((tile_center.lat - viewport_center.lat).powi(2)
+            + (tile_center.lng - viewport_center.lng).powi(2))
+        .sqrt();
+
         // Check if tile intersects with viewport
         if viewport_bounds.contains(&tile_center) {
             TilePriority::Visible
-        } else if distance < 0.1 { // Adjacent to viewport
-            TilePriority::Adjacent  
-        } else if distance < 0.2 { // Near viewport
+        } else if distance < 0.1 {
+            // Adjacent to viewport
+            TilePriority::Adjacent
+        } else if distance < 0.2 {
+            // Near viewport
             TilePriority::Prefetch
         } else {
             TilePriority::Background
         }
     }
-    
+
     fn tile_coord_to_lat_lng(&self, coord: &TileCoord) -> crate::core::geo::LatLng {
         let n = 2.0_f64.powi(coord.z as i32);
         let lng = coord.x as f64 / n * 360.0 - 180.0;
@@ -602,7 +614,7 @@ impl TileWorker {
         config: TileLoaderConfig,
     ) -> Self {
         let semaphore = Arc::new(std::sync::Mutex::new(config.max_concurrent));
-        
+
         Self {
             task_rx,
             result_tx,
@@ -613,8 +625,11 @@ impl TileWorker {
     }
 
     async fn run(mut self) {
-        log::debug!("TileWorker starting with max_concurrent: {}", self.config.max_concurrent);
-        
+        log::debug!(
+            "TileWorker starting with max_concurrent: {}",
+            self.config.max_concurrent
+        );
+
         loop {
             // Collect any new tasks
             while let Ok(task) = self.task_rx.try_recv() {
@@ -641,20 +656,20 @@ impl TileWorker {
                     let result_tx = self.result_tx.clone();
                     let config = self.config.clone();
                     let semaphore = self.semaphore.clone();
-                    
+
                     #[cfg(feature = "debug")]
                     log::debug!("Starting download for tile {:?}", task.coord);
-                    
+
                     crate::runtime::spawn(async move {
                         let result = Self::download_tile(task.clone(), config).await;
                         let tile_result = TileResult {
                             coord: task.coord,
                             data: result,
                         };
-                        
+
                         // Send result back
                         let _ = result_tx.send(tile_result);
-                        
+
                         // Release semaphore permit
                         if let Ok(mut count) = semaphore.lock() {
                             *count += 1;
@@ -669,7 +684,7 @@ impl TileWorker {
             // Small delay to yield control (non-blocking)
             #[cfg(feature = "tokio-runtime")]
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            
+
             #[cfg(not(feature = "tokio-runtime"))]
             {
                 // Use a simple async delay that doesn't block
@@ -686,7 +701,10 @@ impl TileWorker {
             // Check if we should continue (channel still open)
             if self.task_queue.is_empty() {
                 // Wait for more tasks or check if channel is closed
-                match self.task_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                match self
+                    .task_rx
+                    .recv_timeout(std::time::Duration::from_millis(100))
+                {
                     Ok(task) => self.task_queue.push(task),
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                         // Continue processing
@@ -709,17 +727,21 @@ impl TileWorker {
 
         while attempts < config.max_retries {
             attempts += 1;
-            
+
             #[cfg(feature = "debug")]
             log::debug!("Downloading tile {:?} (attempt {})", task.coord, attempts);
-            
+
             match HTTP_CLIENT.get(&task.url).send().await {
                 Ok(response) => {
                     if response.status().is_success() {
                         match response.bytes().await {
                             Ok(bytes) => {
                                 #[cfg(feature = "debug")]
-                                log::debug!("Downloaded tile {:?} ({} bytes)", task.coord, bytes.len());
+                                log::debug!(
+                                    "Downloaded tile {:?} ({} bytes)",
+                                    task.coord,
+                                    bytes.len()
+                                );
                                 return Ok(bytes.to_vec());
                             }
                             Err(e) => {
@@ -737,13 +759,17 @@ impl TileWorker {
 
             if attempts < config.max_retries {
                 #[cfg(feature = "debug")]
-                log::warn!("Tile {:?} download failed on attempt {}: {}", 
-                          task.coord, attempts, last_error.as_ref().unwrap());
-                
+                log::warn!(
+                    "Tile {:?} download failed on attempt {}: {}",
+                    task.coord,
+                    attempts,
+                    last_error.as_ref().unwrap()
+                );
+
                 // Use async delay
                 #[cfg(feature = "tokio-runtime")]
                 tokio::time::sleep(config.retry_delay).await;
-                
+
                 #[cfg(not(feature = "tokio-runtime"))]
                 {
                     let start = std::time::Instant::now();
@@ -756,8 +782,12 @@ impl TileWorker {
 
         let error = last_error.unwrap_or_else(|| "Unknown error".to_string());
         #[cfg(feature = "debug")]
-        log::error!("Giving up on tile {:?} after {} attempts: {}", 
-                   task.coord, attempts, error);
+        log::error!(
+            "Giving up on tile {:?} after {} attempts: {}",
+            task.coord,
+            attempts,
+            error
+        );
         Err(error.into())
     }
-} 
+}

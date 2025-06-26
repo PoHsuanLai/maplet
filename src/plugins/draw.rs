@@ -1,12 +1,11 @@
 use crate::{
     core::{
         bounds::Bounds,
-        geo::{LatLng, Point},
+        geo::Point,
         map::Map,
         viewport::Viewport,
     },
     input::events::InputEvent,
-    layers::vector::VectorLayer,
     plugins::base::PluginTrait,
     Result,
 };
@@ -17,7 +16,7 @@ use egui::Color32;
 #[cfg(feature = "render")]
 use crate::rendering::context::RenderContext;
 
-use std::collections::HashMap;
+use crate::prelude::HashMap;
 
 /// Drawing tool types
 #[derive(Debug, Clone, PartialEq)]
@@ -123,7 +122,7 @@ impl DrawnShape {
             tool,
             points,
             style,
-            metadata: HashMap::new(),
+            metadata: HashMap::default(),
             selected: false,
             visible: true,
         }
@@ -291,7 +290,7 @@ impl DrawPlugin {
             config: DrawConfig::default(),
             state: DrawState::Idle,
             current_tool: DrawTool::Freehand,
-            shapes: HashMap::new(),
+            shapes: HashMap::default(),
             selected_shapes: Vec::new(),
             active: false,
             shape_counter: 0,
@@ -304,7 +303,7 @@ impl DrawPlugin {
             config,
             state: DrawState::Idle,
             current_tool: DrawTool::Freehand,
-            shapes: HashMap::new(),
+            shapes: HashMap::default(),
             selected_shapes: Vec::new(),
             active: false,
             shape_counter: 0,
@@ -511,92 +510,6 @@ impl DrawPlugin {
             (point.y / grid_size).round() * grid_size,
         )
     }
-
-    /// Find shapes at a given point
-    fn find_shapes_at_point(&self, point: &Point) -> Vec<String> {
-        self.shapes
-            .iter()
-            .filter_map(|(id, shape)| {
-                if shape.visible && shape.contains_point(point) {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// Handle mouse/touch input
-    fn handle_pointer_input(&mut self, event: &InputEvent, viewport: &Viewport) -> Result<()> {
-        if !self.active || !self.config.enabled {
-            return Ok(());
-        }
-
-        match event {
-            InputEvent::Click { position } => {
-                let lat_lng = viewport.pixel_to_lat_lng(position);
-                let point = Point::new(lat_lng.lng, lat_lng.lat);
-
-                match self.current_tool {
-                    DrawTool::Select => {
-                        let shapes = self.find_shapes_at_point(&point);
-                        if !shapes.is_empty() {
-                            self.select_shape(&shapes[0])?;
-                        } else {
-                            self.clear_selection();
-                        }
-                    }
-                    _ => {
-                        self.start_drawing(point)?;
-                        self.finish_drawing()?;
-                    }
-                }
-            }
-            InputEvent::DragStart { position } => {
-                let lat_lng = viewport.pixel_to_lat_lng(position);
-                let point = Point::new(lat_lng.lng, lat_lng.lat);
-
-                match self.current_tool {
-                    DrawTool::Select => {
-                        // Start selection rectangle
-                        self.state = DrawState::Selecting {
-                            selection_rect: Bounds::new(point, point),
-                            start_point: point,
-                        };
-                    }
-                    _ => {
-                        self.start_drawing(point)?;
-                    }
-                }
-            }
-            InputEvent::MouseMove { position } => {
-                let lat_lng = viewport.pixel_to_lat_lng(position);
-                let point = Point::new(lat_lng.lng, lat_lng.lat);
-
-                match &mut self.state {
-                    DrawState::Drawing { .. } => {
-                        self.continue_drawing(point)?;
-                    }
-                    DrawState::Selecting { selection_rect, .. } => {
-                        *selection_rect = Bounds::new(selection_rect.min, point);
-                    }
-                    _ => {}
-                }
-            }
-            InputEvent::DragEnd => match &self.state {
-                DrawState::Drawing { .. } => {
-                    self.finish_drawing()?;
-                }
-                DrawState::Selecting { .. } => {
-                    self.state = DrawState::Idle;
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-
-        Ok(())
-    }
 }
 
 impl PluginTrait for DrawPlugin {
@@ -612,7 +525,7 @@ impl PluginTrait for DrawPlugin {
         Ok(())
     }
 
-    fn handle_input(&mut self, input: &InputEvent) -> Result<()> {
+    fn handle_input(&mut self, _input: &InputEvent) -> Result<()> {
         // This will be called by the map, but we need the viewport
         // So we'll handle input in the render method instead
         Ok(())
@@ -622,7 +535,7 @@ impl PluginTrait for DrawPlugin {
         Ok(())
     }
 
-    fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    fn render(&mut self, context: &mut RenderContext, _viewport: &Viewport) -> Result<()> {
         if !self.active || !self.config.enabled {
             return Ok(());
         }

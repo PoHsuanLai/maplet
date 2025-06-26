@@ -6,7 +6,6 @@ use crate::{
         viewport::Viewport,
     },
     input::events::InputEvent,
-    layers::vector::VectorLayer,
     plugins::base::PluginTrait,
     Result,
 };
@@ -14,10 +13,10 @@ use crate::{
 #[cfg(feature = "render")]
 use crate::rendering::context::RenderContext;
 
+use crate::spatial::index::{SpatialIndex, SpatialItem};
 #[cfg(feature = "egui")]
 use egui::Color32;
 use std::collections::HashMap;
-use crate::spatial::index::{SpatialIndex, SpatialItem};
 
 /// Represents a data point for the heatmap
 #[derive(Debug, Clone)]
@@ -235,8 +234,8 @@ impl HeatmapPlugin {
         let points = self.spatial_index.query(&viewport_bounds);
 
         // Calculate intensity for each grid cell
-        for row in 0..grid_height {
-            for col in 0..grid_width {
+        for (row, grid_row) in grid_data.iter_mut().enumerate().take(grid_height) {
+            for (col, cell) in grid_row.iter_mut().enumerate().take(grid_width) {
                 let cell_x = viewport_bounds.min.x + (col as f64 * cell_size);
                 let cell_y = viewport_bounds.min.y + (row as f64 * cell_size);
                 let cell_center = Point::new(cell_x + cell_size / 2.0, cell_y + cell_size / 2.0);
@@ -261,7 +260,7 @@ impl HeatmapPlugin {
                     }
                 }
 
-                grid_data[row][col] = total_intensity;
+                *cell = total_intensity;
             }
         }
 

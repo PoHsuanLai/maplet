@@ -1,6 +1,5 @@
 use crate::{core::geo::Point, Result};
 use egui::Color32;
-use image;
 
 /// Styles for different rendering primitives
 #[derive(Debug, Clone)]
@@ -132,10 +131,13 @@ impl RenderContext {
             log::warn!("Empty tile data, skipping render");
             return Ok(());
         }
-        
+
         // Check for minimum reasonable tile size (100 bytes for a tiny image)
         if tile_data.len() < 100 {
-            log::warn!("Suspiciously small tile data ({} bytes), skipping render", tile_data.len());
+            log::warn!(
+                "Suspiciously small tile data ({} bytes), skipping render",
+                tile_data.len()
+            );
             return Ok(());
         }
 
@@ -155,45 +157,37 @@ impl RenderContext {
 
         Ok(())
     }
-    
+
     /// Validate image format by checking magic bytes
     fn is_valid_image_format(&self, data: &[u8]) -> bool {
         if data.len() < 8 {
             return false;
         }
-        
+
         // Check for PNG signature
         if data.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
             return true;
         }
-        
+
         // Check for JPEG signature
         if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
             return true;
         }
-        
+
         // Check for WebP signature
-        if data.len() >= 12 && data[0..4] == [0x52, 0x49, 0x46, 0x46] && data[8..12] == [0x57, 0x45, 0x42, 0x50] {
+        if data.len() >= 12
+            && data[0..4] == [0x52, 0x49, 0x46, 0x46]
+            && data[8..12] == [0x57, 0x45, 0x42, 0x50]
+        {
             return true;
         }
-        
+
         // Check for GIF signature
         if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
             return true;
         }
-        
+
         false
-    }
-    
-    /// Render a placeholder when tile data is corrupted
-    fn render_placeholder_tile(
-        &mut self,
-        screen_bounds: (Point, Point),
-        opacity: f32,
-    ) -> Result<()> {
-        // Create a simple placeholder (empty for now, could be a colored rectangle)
-        log::trace!("Rendering placeholder tile at bounds {:?} with opacity {}", screen_bounds, opacity);
-        Ok(())
     }
 
     /// Render a tile that already has a texture registered in egui

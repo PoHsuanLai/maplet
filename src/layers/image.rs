@@ -3,7 +3,6 @@ use crate::{
     Result,
 };
 
-
 pub struct ImageLayer {
     properties: LayerProperties,
 }
@@ -53,10 +52,8 @@ impl LayerTrait for ImageLayer {
 
     fn render(
         &self,
-        #[cfg(feature = "render")]
-        _context: &mut crate::rendering::context::RenderContext,
-        #[cfg(not(feature = "render"))]
-        _context: &mut (),
+        #[cfg(feature = "render")] _context: &mut crate::rendering::context::RenderContext,
+        #[cfg(not(feature = "render"))] _context: &mut (),
         _viewport: &crate::core::viewport::Viewport,
     ) -> Result<()> {
         Ok(())

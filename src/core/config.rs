@@ -33,12 +33,25 @@ impl MapPerformanceProfile {
                     cache_size: 1024,
                     fetch_batch_size: 6,
                     lazy_eviction: true,
+                    prefetch_buffer: 2,
+                    max_retries: 3,
+                    retry_delay_ms: 500,
+                    exponential_backoff: true,
+                    error_tile_url: None,
+                    show_parent_tiles: true,
+                    preload_zoom_tiles: true,
                 },
                 animation: InteractionAnimationConfig {
                     enable_transitions: true,
                     pan_easing: EasingFunction::EaseOutCubic,
                     zoom_easing: EasingFunction::EaseOutCubic,
                     max_zoom_step_per_frame: 0.15,
+                    zoom_animation_threshold: 0.05,
+                    zoom_duration_ms: 350,
+                    pan_duration_ms: 300,
+                    zoom_to_cursor: true,
+                    use_transform_animations: true,
+                    smooth_wheel_zoom: true,
                 },
                 rendering: GpuRenderingConfig {
                     msaa_samples: 4,
@@ -57,12 +70,25 @@ impl MapPerformanceProfile {
                     cache_size: 256,
                     fetch_batch_size: 2,
                     lazy_eviction: true,
+                    prefetch_buffer: 1,
+                    max_retries: 2,
+                    retry_delay_ms: 250,
+                    exponential_backoff: false,
+                    error_tile_url: None,
+                    show_parent_tiles: false,
+                    preload_zoom_tiles: false,
                 },
                 animation: InteractionAnimationConfig {
                     enable_transitions: false,
                     pan_easing: EasingFunction::Linear,
                     zoom_easing: EasingFunction::Linear,
                     max_zoom_step_per_frame: 0.5,
+                    zoom_animation_threshold: 0.05,
+                    zoom_duration_ms: 350,
+                    pan_duration_ms: 200,
+                    zoom_to_cursor: true,
+                    use_transform_animations: true,
+                    smooth_wheel_zoom: true,
                 },
                 rendering: GpuRenderingConfig {
                     msaa_samples: 0,
@@ -81,12 +107,25 @@ impl MapPerformanceProfile {
                     cache_size: 4096,
                     fetch_batch_size: 12,
                     lazy_eviction: false,
+                    prefetch_buffer: 3,
+                    max_retries: 5,
+                    retry_delay_ms: 1000,
+                    exponential_backoff: true,
+                    error_tile_url: None,
+                    show_parent_tiles: true,
+                    preload_zoom_tiles: true,
                 },
                 animation: InteractionAnimationConfig {
                     enable_transitions: true,
                     pan_easing: EasingFunction::EaseInOutBack,
                     zoom_easing: EasingFunction::EaseInOutExpo,
                     max_zoom_step_per_frame: 0.05,
+                    zoom_animation_threshold: 0.05,
+                    zoom_duration_ms: 350,
+                    pan_duration_ms: 400,
+                    zoom_to_cursor: true,
+                    use_transform_animations: true,
+                    smooth_wheel_zoom: true,
                 },
                 rendering: GpuRenderingConfig {
                     msaa_samples: 8,
@@ -168,6 +207,20 @@ pub struct TileLoadingConfig {
     pub fetch_batch_size: usize,
     /// If true, evict tiles lazily (after animation completes)
     pub lazy_eviction: bool,
+    /// Number of extra tile layers to prefetch around the visible area
+    pub prefetch_buffer: u32,
+    /// Maximum number of retry attempts for failed tiles
+    pub max_retries: u32,
+    /// Base delay in milliseconds between retry attempts
+    pub retry_delay_ms: u64,
+    /// Whether to use exponential backoff for retries
+    pub exponential_backoff: bool,
+    /// URL for fallback/error tiles (like Leaflet's errorTileUrl)
+    pub error_tile_url: Option<String>,
+    /// Whether to show parent tiles while loading children (smooth zoom)
+    pub show_parent_tiles: bool,
+    /// Whether to preload tiles for next zoom level during zoom animation
+    pub preload_zoom_tiles: bool,
 }
 
 impl TileLoadingConfig {
@@ -180,7 +233,24 @@ impl TileLoadingConfig {
     /// Get recommended concurrent task limit for background processing
     pub fn recommended_concurrent_tasks(&self) -> usize {
         // Balance between fetch batch size and system resources
-        (self.fetch_batch_size * 2).min(16).max(4)
+        (self.fetch_batch_size * 2).clamp(4, 16)
+    }
+}
+
+impl Default for TileLoadingConfig {
+    fn default() -> Self {
+        Self {
+            cache_size: 1024,
+            fetch_batch_size: 8,
+            lazy_eviction: true,
+            prefetch_buffer: 2,
+            max_retries: 3,
+            retry_delay_ms: 500,
+            exponential_backoff: true,
+            error_tile_url: None,
+            show_parent_tiles: true,
+            preload_zoom_tiles: true,
+        }
     }
 }
 
@@ -195,6 +265,18 @@ pub struct InteractionAnimationConfig {
     pub zoom_easing: EasingFunction,
     /// Maximum zoom delta per frame (controls smooth zoom ramp)
     pub max_zoom_step_per_frame: f32,
+    /// Maximum zoom difference that will trigger animation (like Leaflet's zoomAnimationThreshold)
+    pub zoom_animation_threshold: f32,
+    /// Duration in milliseconds for zoom animations
+    pub zoom_duration_ms: u64,
+    /// Duration in milliseconds for pan animations
+    pub pan_duration_ms: u64,
+    /// Whether to animate zoom around the point where user clicked/scrolled
+    pub zoom_to_cursor: bool,
+    /// Whether to use transform-based animations (faster than repositioning)
+    pub use_transform_animations: bool,
+    /// Whether to enable smooth wheel zoom (continuous vs step-based)
+    pub smooth_wheel_zoom: bool,
 }
 
 impl InteractionAnimationConfig {
@@ -221,6 +303,23 @@ impl InteractionAnimationConfig {
             }
         } else {
             0
+        }
+    }
+}
+
+impl Default for InteractionAnimationConfig {
+    fn default() -> Self {
+        Self {
+            enable_transitions: true,
+            pan_easing: EasingFunction::EaseOutCubic,
+            zoom_easing: EasingFunction::EaseOutCubic,
+            max_zoom_step_per_frame: 0.15,
+            zoom_animation_threshold: 0.05,
+            zoom_duration_ms: 350,
+            pan_duration_ms: 300,
+            zoom_to_cursor: true,
+            use_transform_animations: true,
+            smooth_wheel_zoom: true,
         }
     }
 }
@@ -257,12 +356,12 @@ impl GpuRenderingConfig {
     /// Get estimated VRAM usage for atlases and buffers
     pub fn estimated_vram_usage_mb(&self) -> f32 {
         let glyph_atlas_mb = self.glyph_atlas_max_bytes as f32 / 1_048_576.0;
-        let msaa_overhead = if self.is_msaa_enabled() { 
-            self.msaa_samples as f32 * 0.5 
-        } else { 
-            0.0 
+        let msaa_overhead = if self.is_msaa_enabled() {
+            self.msaa_samples as f32 * 0.5
+        } else {
+            0.0
         };
-        
+
         glyph_atlas_mb + msaa_overhead + 16.0 // Base overhead
     }
 }
@@ -284,7 +383,9 @@ impl TextureFilterMode {
     pub fn to_wgpu_filter(&self) -> (wgpu::FilterMode, wgpu::FilterMode) {
         match self {
             Self::Nearest => (wgpu::FilterMode::Nearest, wgpu::FilterMode::Nearest),
-            Self::Linear | Self::Anisotropic(_) => (wgpu::FilterMode::Linear, wgpu::FilterMode::Linear),
+            Self::Linear | Self::Anisotropic(_) => {
+                (wgpu::FilterMode::Linear, wgpu::FilterMode::Linear)
+            }
         }
     }
 
@@ -338,7 +439,7 @@ mod tests {
         };
 
         assert_eq!(config.target_frame_duration_ms(), Some(16));
-        
+
         // Should not render immediately after a render
         let now = std::time::Instant::now();
         assert!(!config.should_render(now));
@@ -350,6 +451,13 @@ mod tests {
             cache_size: 1000,
             fetch_batch_size: 8,
             lazy_eviction: true,
+            prefetch_buffer: 2,
+            max_retries: 3,
+            retry_delay_ms: 500,
+            exponential_backoff: true,
+            error_tile_url: None,
+            show_parent_tiles: true,
+            preload_zoom_tiles: true,
         };
 
         assert!(config.estimated_memory_usage() > 0);
@@ -377,4 +485,4 @@ mod tests {
         assert_eq!(config.wgpu_sample_count(), 4);
         assert!(config.estimated_vram_usage_mb() > 0.0);
     }
-} 
+}

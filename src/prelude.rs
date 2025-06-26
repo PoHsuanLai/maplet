@@ -5,101 +5,85 @@
 
 // Core types
 pub use crate::core::{
-    map::{Map, MapOptions},
+    bounds::Bounds,
     builder::MapBuilder,
     config::{
-        MapPerformanceProfile, MapPerformanceOptions,
-        FrameTimingConfig, TileLoadingConfig, InteractionAnimationConfig, GpuRenderingConfig,
-        TextureFilterMode,
+        FrameTimingConfig, GpuRenderingConfig, InteractionAnimationConfig, MapPerformanceOptions,
+        MapPerformanceProfile, TextureFilterMode, TileLoadingConfig,
     },
-    viewport::Viewport,
     geo::{LatLng, LatLngBounds, Point, TileCoord},
-    bounds::Bounds,
+    map::{Map, MapOptions},
+    viewport::Viewport,
 };
 
 // Layer system
 pub use crate::layers::{
-    base::LayerTrait,
-    tile::TileLayer,
-    vector::VectorLayer,
-    marker::Marker,
-    manager::LayerManager,
+    base::LayerTrait, manager::LayerManager, marker::Marker, tile::TileLayer, vector::VectorLayer,
 };
 
 // Data types
-pub use crate::data::{
-    geojson::{GeoJson, GeoJsonLayer, GeoJsonFeature, FeatureStyle},
-};
+pub use crate::data::geojson::{FeatureStyle, GeoJson, GeoJsonFeature, GeoJsonLayer};
 
 // Plugin system
 pub use crate::plugins::{
-    base::PluginTrait,
-    draw::DrawPlugin,
-    measure::MeasurePlugin,
-    heatmap::HeatmapPlugin,
+    base::PluginTrait, draw::DrawPlugin, heatmap::HeatmapPlugin, measure::MeasurePlugin,
 };
 
 // Input handling
 pub use crate::input::{
-    events::{InputEvent, KeyCode, KeyModifiers},
-    handler::InputHandler,
+    events::{EventHandled, InputEvent, KeyCode, KeyModifiers},
+    gestures::GestureRecognizer,
+    handler::{InputEventHandler, InputHandler},
 };
 
-// Animation  
+// Animation
 pub use crate::animation::{
-    transitions::Transition,
-    interpolation::Interpolatable,
+    interpolation::Interpolation,
+    transitions::{Transition, TransitionManager, TransitionType},
+    tweening::{Tween, TweenManager, Tweenable},
 };
 
 // Spatial
 pub use crate::spatial::{
+    clustering::{Cluster, Clustering},
     index::{SpatialIndex, SpatialItem},
-    clustering::{Cluster, ClusteringConfig},
 };
 
 // Background tasks
-pub use crate::background::{
-    tasks::{BackgroundTask, TaskPriority, TaskId},
-    geojson::GeoJsonParseTask,
-};
+pub use crate::background::tasks::{BackgroundTask, BackgroundTaskManager, TaskManagerConfig, TaskPriority};
 
 // Runtime abstraction
 pub use crate::runtime::{
-    AsyncSpawner, AsyncHandle, AsyncHandleWithResult,
-    spawn, spawn_with_result, runtime,
+    runtime, spawn, spawn_with_result, AsyncHandle, AsyncHandleWithResult, AsyncSpawner,
 };
 
 // Tile system
 pub use crate::tiles::{
-    loader::TileLoader,
-    source::TileSource,
     cache::TileCache,
+    loader::{TileLoader, TileLoaderConfig},
+    source::TileSource,
 };
 
 // Rendering (feature-gated)
 #[cfg(feature = "render")]
-pub use crate::rendering::{
-    context::RenderContext,
-    pipeline::RenderPipeline,
-};
+pub use crate::rendering::{context::RenderContext, pipeline::RenderPipeline};
 
 // UI integration (feature-gated)
 #[cfg(feature = "egui")]
-pub use crate::ui::{
-    widget::MapWidget,
-    controls::MapControls,
-    style::MapStyle,
-};
+pub use crate::ui::{controls::MapControls, style::MapStyle, widget::MapWidget};
 
 // Result and Error types
-pub use crate::{Result, Error as MapError};
+pub use crate::{Error as MapError, Result};
 
-// Common standard library re-exports
+// Common standard library re-exports with better performance hashmaps
 pub use std::{
     sync::Arc,
-    collections::HashMap,
     time::{Duration, Instant},
 };
 
+// Use FxHashMap and FxHashSet for better performance
+pub use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
+
 // Async re-exports
+#[cfg(feature = "tokio-runtime")]
 pub use futures::Future;

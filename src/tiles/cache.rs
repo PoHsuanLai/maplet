@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex};
+use crate::core::geo::TileCoord;
 use lru::LruCache;
 use std::num::NonZeroUsize;
-use crate::core::geo::TileCoord;
+use std::sync::{Arc, Mutex};
 
 /// In-memory tile cache using LRU eviction
 #[derive(Debug)]
@@ -44,7 +44,9 @@ impl TileCache {
 
     /// Check if a tile is in the cache
     pub fn contains(&self, coord: &TileCoord) -> bool {
-        self.cache.lock().ok()
+        self.cache
+            .lock()
+            .ok()
             .map(|cache| cache.contains(coord))
             .unwrap_or(false)
     }
@@ -63,9 +65,7 @@ impl TileCache {
 
     /// Get the current number of cached tiles
     pub fn len(&self) -> usize {
-        self.cache.lock().ok()
-            .map(|cache| cache.len())
-            .unwrap_or(0)
+        self.cache.lock().ok().map(|cache| cache.len()).unwrap_or(0)
     }
 
     /// Check if the cache is empty
@@ -75,7 +75,9 @@ impl TileCache {
 
     /// Get cache capacity
     pub fn capacity(&self) -> usize {
-        self.cache.lock().ok()
+        self.cache
+            .lock()
+            .ok()
             .map(|cache| cache.cap().get())
             .unwrap_or(0)
     }
@@ -115,7 +117,7 @@ mod tests {
         cache.insert(coord1, data1.clone());
         assert_eq!(cache.len(), 1);
         assert!(cache.contains(&coord1));
-        
+
         let retrieved = cache.get(&coord1).unwrap();
         assert_eq!(*retrieved, data1);
 
@@ -147,4 +149,4 @@ mod tests {
         assert!(cache.contains(&coord2));
         assert!(cache.contains(&coord3));
     }
-} 
+}

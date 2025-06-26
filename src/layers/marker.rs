@@ -28,8 +28,7 @@ static MARKER_BYTES: &[u8] = include_bytes!("../../assets/images/marker-icon.png
 
 // Decode once to RGBA
 static MARKER_RGBA: Lazy<Vec<u8>> = Lazy::new(|| {
-    let img = image::load_from_memory(MARKER_BYTES)
-        .expect("embedded marker icon should decode");
+    let img = image::load_from_memory(MARKER_BYTES).expect("embedded marker icon should decode");
     img.to_rgba8().into_raw()
 });
 
@@ -73,10 +72,8 @@ impl LayerTrait for Marker {
 
     fn render(
         &self,
-        #[cfg(feature = "render")]
-        context: &mut crate::rendering::context::RenderContext,
-        #[cfg(not(feature = "render"))]
-        context: &mut (),
+        #[cfg(feature = "render")] context: &mut crate::rendering::context::RenderContext,
+        #[cfg(not(feature = "render"))] context: &mut (),
         viewport: &crate::core::viewport::Viewport,
     ) -> Result<()> {
         // Convert position to pixel coords

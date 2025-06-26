@@ -6,7 +6,7 @@ use crate::{
     Result,
 };
 
-use rstar::{RTree, RTreeObject, AABB, PointDistance};
+use rstar::{PointDistance, RTree, RTreeObject, AABB};
 
 /// A spatial item that can be indexed via an R-tree
 #[derive(Debug, Clone)]
@@ -94,16 +94,18 @@ impl<T: Clone> SpatialIndex<T> {
     }
 
     pub fn query(&self, bounds: &Bounds) -> Vec<&SpatialItem<T>> {
-        let envelope = AABB::from_corners(
-            [bounds.min.x, bounds.min.y],
-            [bounds.max.x, bounds.max.y],
-        );
-        self.rtree.locate_in_envelope_intersecting(&envelope).collect()
+        let envelope =
+            AABB::from_corners([bounds.min.x, bounds.min.y], [bounds.max.x, bounds.max.y]);
+        self.rtree
+            .locate_in_envelope_intersecting(&envelope)
+            .collect()
     }
 
     pub fn query_radius(&self, center: &Point, radius: f64) -> Vec<&SpatialItem<T>> {
         let center_arr = [center.x, center.y];
-        self.rtree.locate_within_distance(center_arr, radius).collect()
+        self.rtree
+            .locate_within_distance(center_arr, radius)
+            .collect()
     }
 
     pub fn remove(&mut self, id: &str) -> Result<Option<SpatialItem<T>>> {

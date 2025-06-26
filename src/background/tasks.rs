@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use std::collections::BinaryHeap;
-use std::cmp::Ordering;
-use crossbeam_channel::{Receiver, Sender, unbounded};
 use crate::{runtime, Result};
+use crossbeam_channel::{unbounded, Receiver, Sender};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use std::sync::Arc;
 
 /// Priority levels for background tasks
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,18 +27,21 @@ pub struct TaskResult {
     pub result: Result<Box<dyn std::any::Any + Send>>,
 }
 
-/// A background task that can be executed asynchronously
-/// Made object-safe by removing generic associated types
+/// Trait for background tasks that can be executed asynchronously
 pub trait BackgroundTask: Send + Sync {
-    /// Execute the task
-    fn execute(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>>;
-    
+    /// Execute the task and return the result
+    fn execute(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>,
+    >;
+
     /// Get the task ID
     fn task_id(&self) -> &str;
-    
+
     /// Get the task priority
     fn priority(&self) -> TaskPriority;
-    
+
     /// Get an estimate of task duration (for scheduling)
     fn estimated_duration(&self) -> std::time::Duration {
         std::time::Duration::from_millis(100) // Default 100ms
@@ -112,7 +115,7 @@ impl SimpleSemaphore {
             max_permits: permits,
         }
     }
-    
+
     fn try_acquire(&self) -> bool {
         if let Ok(mut permits) = self.permits.lock() {
             if *permits > 0 {
@@ -122,7 +125,7 @@ impl SimpleSemaphore {
         }
         false
     }
-    
+
     fn release(&self) {
         if let Ok(mut permits) = self.permits.lock() {
             if *permits < self.max_permits {
@@ -130,7 +133,7 @@ impl SimpleSemaphore {
             }
         }
     }
-    
+
     fn available_permits(&self) -> usize {
         self.permits.lock().map(|permits| *permits).unwrap_or(0)
     }
@@ -151,10 +154,10 @@ impl BackgroundTaskManager {
         let (task_tx, task_rx) = unbounded();
         let (result_tx, result_rx) = unbounded();
         let semaphore = Arc::new(SimpleSemaphore::new(config.max_concurrent_tasks));
-        
+
         let worker_semaphore = semaphore.clone();
         let worker_config = config.clone();
-        
+
         let worker_handle = runtime::spawn(async move {
             Self::worker_loop(task_rx, result_tx, worker_semaphore, worker_config).await;
         });
@@ -176,14 +179,15 @@ impl BackgroundTaskManager {
     /// Submit a task for background processing
     pub fn submit_task(&self, task: Arc<dyn BackgroundTask>) -> Result<()> {
         let priority = task.priority();
-        
+
         let prioritized = PrioritizedTask {
             task,
             priority,
             submitted_at: std::time::Instant::now(),
         };
 
-        self.task_tx.send(prioritized)
+        self.task_tx
+            .send(prioritized)
             .map_err(|_| crate::Error::Plugin("Task queue is closed".to_string()))?;
 
         Ok(())
@@ -221,16 +225,18 @@ impl BackgroundTaskManager {
         config: TaskManagerConfig,
     ) {
         let mut task_queue = BinaryHeap::new();
-        
+
         loop {
             // Collect all available tasks
             while let Ok(task) = task_rx.try_recv() {
                 task_queue.push(task);
-                
+
                 // Drop lowest priority tasks if queue is too large
                 while task_queue.len() > config.max_queue_size {
                     if let Some(dropped) = task_queue.iter().min().cloned() {
-                        task_queue.retain(|t| t.priority > TaskPriority::Low || t.submitted_at != dropped.submitted_at);
+                        task_queue.retain(|t| {
+                            t.priority > TaskPriority::Low || t.submitted_at != dropped.submitted_at
+                        });
                     }
                 }
             }
@@ -242,14 +248,11 @@ impl BackgroundTaskManager {
                     let task_id = task.task.task_id().to_string();
                     let task_clone = task.task.clone();
                     let sem_clone = semaphore.clone();
-                    
+
                     let _handle = runtime::spawn(async move {
                         let result = task_clone.execute().await;
-                        let task_result = TaskResult {
-                            task_id,
-                            result,
-                        };
-                        
+                        let task_result = TaskResult { task_id, result };
+
                         let _ = result_tx.send(task_result);
                         sem_clone.release(); // Release semaphore permit
                     });
@@ -262,7 +265,7 @@ impl BackgroundTaskManager {
             // Brief pause to prevent busy-waiting
             // This is a simple approach - in production you might want more sophisticated timing
             let sleep_duration = if task_queue.is_empty() { 100 } else { 10 };
-            
+
             // Use a simple delay mechanism that works across runtimes
             let start = std::time::Instant::now();
             while start.elapsed() < std::time::Duration::from_millis(sleep_duration) {
@@ -273,11 +276,11 @@ impl BackgroundTaskManager {
             // Check if we should exit (all channels closed and no tasks)
             if task_queue.is_empty() && task_rx.is_empty() {
                 // Check if the channel is actually disconnected
-                if let Err(_) = task_rx.try_recv() {
+                if task_rx.try_recv().is_err() {
                     // Channel is likely disconnected, continue anyway
                     continue;
                 }
             }
         }
     }
-} 
+}

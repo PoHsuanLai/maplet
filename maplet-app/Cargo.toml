@@ -11,7 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 maplet = { path = "..", features = ["app", "debug"] }
-tokio = { version = "1.36", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.36", features = ["rt-multi-thread", "macros", "signal"] }
 env_logger = "0.10"
 eframe = "0.26"
-egui = "0.26" 
+egui = "0.26"
+fxhash = "0.2" 

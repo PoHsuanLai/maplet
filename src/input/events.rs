@@ -71,15 +71,13 @@ pub enum KeyCode {
 }
 
 /// Keyboard modifiers
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct KeyModifiers {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
     pub meta: bool,
 }
-
 
 impl InputEvent {
     /// Gets the primary position associated with this event, if any

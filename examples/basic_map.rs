@@ -3,7 +3,7 @@ use maplet::{
     core::{geo::LatLng, geo::Point, map::Map},
     layers::tile::TileLayer,
     ui::{
-        widget::{MapWidget, MapWidgetConfig, MapCursor},
+        widget::{MapCursor, MapWidget, MapWidgetConfig},
         MapWidgetExt,
     },
 };

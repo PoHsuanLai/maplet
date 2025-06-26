@@ -13,7 +13,9 @@ pub struct OpenStreetMapSource {
 
 impl OpenStreetMapSource {
     pub fn new() -> Self {
-        Self { subdomains: vec!["a", "b", "c"] }
+        Self {
+            subdomains: vec!["a", "b", "c"],
+        }
     }
 }
 
@@ -27,7 +29,10 @@ impl TileSource for OpenStreetMapSource {
     fn url(&self, coord: TileCoord) -> String {
         // Guard against empty subdomain list (should not happen, but be safe)
         if self.subdomains.is_empty() {
-            return format!("https://tile.openstreetmap.org/{}/{}/{}.png", coord.z, coord.x, coord.y);
+            return format!(
+                "https://tile.openstreetmap.org/{}/{}/{}.png",
+                coord.z, coord.x, coord.y
+            );
         }
 
         let idx = ((coord.x + coord.y) % self.subdomains.len() as u32) as usize;
@@ -37,4 +42,4 @@ impl TileSource for OpenStreetMapSource {
             sub, coord.z, coord.x, coord.y
         )
     }
-} 
+}

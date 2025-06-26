@@ -5,25 +5,20 @@ pub mod widget;
 
 // Re-export commonly used types
 pub use controls::{
-    MapControls, Control, ControlType, ControlPosition,
-    ZoomControl, LayerControl, Compass, ScaleBar, SearchControl,
-    DrawingTools, Measurement, LocationControl,
-    ZoomControlConfig, LayerControlConfig, CompassConfig, ScaleBarConfig,
-    SearchConfig, DrawingToolsConfig, MeasurementConfig, LocationConfig,
-    DrawingTool, MeasurementTool, MeasurementUnits, LayerInfo, SearchResult,
+    Compass, CompassConfig, Control, ControlPosition, ControlType, DrawingTool, DrawingTools,
+    DrawingToolsConfig, LayerControl, LayerControlConfig, LayerInfo, LocationConfig,
+    LocationControl, MapControls, Measurement, MeasurementConfig, MeasurementTool,
+    MeasurementUnits, ScaleBar, ScaleBarConfig, SearchConfig, SearchControl, SearchResult,
+    ZoomControl, ZoomControlConfig,
 };
 
 pub use popup::{
-    Popup, PopupManager, PopupType, PopupPosition, PopupAnimation,
-    PopupStyle, PopupContent, PopupSection, FormField, FormFieldType,
-    PopupButton, PopupButtonType, PopupAction, PopupEvent,
+    FormField, FormFieldType, Popup, PopupAction, PopupAnimation, PopupButton, PopupButtonType,
+    PopupContent, PopupEvent, PopupManager, PopupPosition, PopupSection, PopupStyle, PopupType,
 };
 
 pub use style::{
-    MapStyle, ZoomControlStyle, AttributionStyle, MarkerStyle, VectorStyle,
-    MapThemes, StyleExt,
+    AttributionStyle, MapStyle, MapThemes, MarkerStyle, StyleExt, VectorStyle, ZoomControlStyle,
 };
 
-pub use widget::{
-    MapWidget, MapWidgetConfig, MapCursor, MapWidgetExt,
-};
+pub use widget::{MapCursor, MapWidget, MapWidgetConfig, MapWidgetExt};

@@ -11,20 +11,20 @@ use crate::rendering::context::RenderContext;
 #[async_trait]
 pub trait PluginTrait: Send + Sync {
     fn name(&self) -> &str;
-    fn on_add(&self, map: &mut Map) -> Result<()> {
+    fn on_add(&self, _map: &mut Map) -> Result<()> {
         Ok(())
     }
-    fn on_remove(&self, map: &mut Map) -> Result<()> {
+    fn on_remove(&self, _map: &mut Map) -> Result<()> {
         Ok(())
     }
-    fn handle_input(&mut self, input: &InputEvent) -> Result<()> {
+    fn handle_input(&mut self, _input: &InputEvent) -> Result<()> {
         Ok(())
     }
-    fn update(&mut self, delta_time: f64) -> Result<()> {
+    fn update(&mut self, _delta_time: f64) -> Result<()> {
         Ok(())
     }
     #[cfg(feature = "render")]
-    fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    fn render(&mut self, _context: &mut RenderContext, _viewport: &Viewport) -> Result<()> {
         Ok(())
     }
 

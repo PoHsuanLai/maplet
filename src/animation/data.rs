@@ -1,10 +1,9 @@
+use crate::prelude::HashMap;
 use crate::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Supported animation data formats
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum DataFormat {
     /// JSON format for human-readable animation data
     #[default]
@@ -82,7 +81,7 @@ impl DataFormat {
             }
             DataFormat::Custom(encoding) => {
                 // For custom formats, we'll use JSON as base and add encoding metadata
-                let mut custom_data = HashMap::new();
+                let mut custom_data = HashMap::default();
                 custom_data.insert(
                     "encoding".to_string(),
                     serde_json::Value::String(encoding.clone()),
@@ -183,7 +182,6 @@ impl DataFormat {
     }
 }
 
-
 impl AnimationData {
     /// Create a new animation data structure
     pub fn new(name: String, duration: f64) -> Self {
@@ -191,7 +189,7 @@ impl AnimationData {
             name,
             duration,
             tracks: Vec::new(),
-            metadata: HashMap::new(),
+            metadata: HashMap::default(),
             loop_animation: false,
             ping_pong: false,
         }
@@ -310,7 +308,7 @@ impl KeyframeData {
     pub fn new(time: f64) -> Self {
         Self {
             time,
-            values: HashMap::new(),
+            values: HashMap::default(),
             easing: None,
             interpolation: None,
         }

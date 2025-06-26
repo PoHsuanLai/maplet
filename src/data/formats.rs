@@ -1,9 +1,9 @@
+use crate::prelude::HashMap;
 use crate::{
     core::geo::{LatLng, LatLngBounds},
     data::geojson::{GeoJson, GeoJsonFeature, GeoJsonGeometry},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Supported data formats
 #[derive(Debug, Clone, PartialEq)]
@@ -125,7 +125,7 @@ impl DataProcessor {
                 vec![Feature {
                     id: None,
                     geometry: Some(Self::convert_geojson_geometry(geometry)),
-                    properties: HashMap::new(),
+                    properties: HashMap::default(),
                 }]
             }
         };
@@ -147,7 +147,7 @@ impl DataProcessor {
                         features.push(Feature {
                             id: None,
                             geometry: Some(Geometry::Point(coords[0])),
-                            properties: HashMap::new(),
+                            properties: HashMap::default(),
                         });
                     }
                 }
@@ -171,7 +171,7 @@ impl DataProcessor {
                     features.push(Feature {
                         id: None,
                         geometry: Some(Geometry::Point(LatLng::new(lat, lon))),
-                        properties: HashMap::new(),
+                        properties: HashMap::default(),
                     });
                 }
             }
@@ -224,7 +224,7 @@ impl DataProcessor {
                     values[lat_col].parse::<f64>(),
                     values[lng_col].parse::<f64>(),
                 ) {
-                    let mut properties = HashMap::new();
+                    let mut properties = HashMap::default();
                     for (i, &value) in values.iter().enumerate() {
                         if i != lat_col && i != lng_col && i < headers.len() {
                             properties.insert(
@@ -266,7 +266,7 @@ impl DataProcessor {
                             features: vec![Feature {
                                 id: None,
                                 geometry: Some(Geometry::Point(LatLng::new(lat, lng))),
-                                properties: HashMap::new(),
+                                properties: HashMap::default(),
                             }],
                             bbox: None,
                         });

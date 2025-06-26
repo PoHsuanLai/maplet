@@ -3,7 +3,6 @@ use std::f64::consts::PI;
 
 /// Web Mercator projection constants
 const EARTH_RADIUS: f64 = 6378137.0;
-const EARTH_CIRCUMFERENCE: f64 = 2.0 * PI * EARTH_RADIUS;
 const MAX_LATITUDE: f64 = 85.0511287798;
 
 /// Represents a geographical coordinate with latitude and longitude
@@ -70,6 +69,12 @@ impl LatLng {
     }
 }
 
+impl Default for LatLng {
+    fn default() -> Self {
+        Self::new(0.0, 0.0)
+    }
+}
+
 /// Represents a point in screen or projected coordinates
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Point {
@@ -102,6 +107,12 @@ impl Point {
 
     pub fn floor(&self) -> Point {
         Point::new(self.x.floor(), self.y.floor())
+    }
+}
+
+impl Default for Point {
+    fn default() -> Self {
+        Self::new(0.0, 0.0)
     }
 }
 

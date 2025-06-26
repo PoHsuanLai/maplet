@@ -1,10 +1,8 @@
 use crate::{
     core::{
-        bounds::Bounds,
         geo::{LatLng, LatLngBounds, Point},
         viewport::Viewport,
     },
-    data::geojson::{GeoJson, GeoJsonFeature},
     layers::base::{LayerProperties, LayerTrait, LayerType},
     Result,
 };
