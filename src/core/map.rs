@@ -1,5 +1,6 @@
 use crate::{
-    core::{geo::LatLng, viewport::Viewport},
+    background::{BackgroundTaskManager, tasks::TaskManagerConfig},
+    core::{config::MapPerformanceOptions, geo::LatLng, viewport::Viewport},
     input::events::InputEvent,
     layers::{base::LayerTrait, manager::LayerManager},
     plugins::base::PluginTrait,
@@ -59,10 +60,18 @@ pub struct Map {
     event_queue: VecDeque<MapEvent>,
     /// Map options and settings
     options: MapOptions,
+    /// Performance configuration
+    performance: MapPerformanceOptions,
     /// Whether the map is currently being dragged
     is_dragging: bool,
     /// Whether the map is currently being zoomed
     is_zooming: bool,
+    /// Background task manager for CPU-intensive operations
+    background_tasks: BackgroundTaskManager,
+    /// Timing tracking for frame rate control
+    last_render_time: std::time::Instant,
+    /// Timing tracking for update rate control
+    last_update_time: std::time::Instant,
 }
 
 /// Configuration options for the map
@@ -122,6 +131,9 @@ impl Map {
 
     /// Creates a new map with custom options
     pub fn with_options(viewport: Viewport, options: MapOptions) -> Self {
+        let performance = MapPerformanceOptions::default();
+        let now = std::time::Instant::now();
+        
         let mut map = Self {
             viewport,
             layer_manager: LayerManager::new(),
@@ -129,8 +141,12 @@ impl Map {
             event_listeners: HashMap::new(),
             event_queue: VecDeque::new(),
             options,
+            performance,
             is_dragging: false,
             is_zooming: false,
+            background_tasks: BackgroundTaskManager::with_default_config(),
+            last_render_time: now,
+            last_update_time: now,
         };
 
         // Apply zoom limits from options
@@ -139,6 +155,38 @@ impl Map {
         }
 
         map
+    }
+
+    /// Creates a new map with custom options and performance configuration
+    pub fn with_options_and_performance(
+        viewport: Viewport, 
+        options: MapOptions, 
+        performance: MapPerformanceOptions,
+        task_config: TaskManagerConfig
+    ) -> Result<Self> {
+        let now = std::time::Instant::now();
+        
+        let mut map = Self {
+            viewport,
+            layer_manager: LayerManager::new(),
+            plugins: HashMap::new(),
+            event_listeners: HashMap::new(),
+            event_queue: VecDeque::new(),
+            options,
+            performance,
+            is_dragging: false,
+            is_zooming: false,
+            background_tasks: BackgroundTaskManager::new(task_config),
+            last_render_time: now,
+            last_update_time: now,
+        };
+
+        // Apply zoom limits from options
+        if let (Some(min), Some(max)) = (map.options.min_zoom, map.options.max_zoom) {
+            map.viewport.set_zoom_limits(min, max);
+        }
+
+        Ok(map)
     }
 
     /// Sets the map view to a specific center and zoom level
@@ -437,7 +485,9 @@ impl Map {
     }
 
     /// Renders the map
-    pub async fn render(
+    /// Render the map using the provided render context
+    #[cfg(feature = "render")]
+    pub fn render(
         &mut self,
         render_context: &mut crate::rendering::context::RenderContext,
     ) -> Result<()> {
@@ -464,23 +514,31 @@ impl Map {
                 }
             }
 
-            // If this is a tile layer, update its tiles first (async download management)
+            // If this is a tile layer, update its tiles first (sync processing of completed downloads)
             if let Some(tile_layer) = layer
                 .as_any_mut()
                 .downcast_mut::<crate::layers::tile::TileLayer>()
             {
-                let _ = pollster::block_on(tile_layer.update_tiles(&self.viewport));
+                let _ = tile_layer.update_tiles(&self.viewport);
             }
 
-            let _ = pollster::block_on(layer.render(render_context, &self.viewport));
+            let _ = layer.render(render_context, &self.viewport);
         });
 
         // Render all plugins
         for plugin in self.plugins.values_mut() {
-            plugin.render(render_context, &self.viewport).await?;
+            let _ = plugin.render(render_context, &self.viewport);
         }
 
         Ok(())
+    }
+
+    /// No-op render method when render feature is disabled
+    #[cfg(not(feature = "render"))]
+    pub fn render(&mut self, _render_context: &mut ()) -> Result<()> {
+        Err(Box::new(crate::MapError::FeatureNotEnabled(
+            "render feature not enabled - enable 'render' feature to use GPU rendering".to_string()
+        )))
     }
 
     /// Gets the current viewport
@@ -496,6 +554,41 @@ impl Map {
     /// Gets the map options
     pub fn options(&self) -> &MapOptions {
         &self.options
+    }
+
+    /// Gets access to the background task manager
+    pub fn background_tasks(&self) -> &BackgroundTaskManager {
+        &self.background_tasks
+    }
+
+    /// Get the current performance configuration
+    pub fn performance(&self) -> &MapPerformanceOptions {
+        &self.performance
+    }
+
+    /// Update the performance configuration
+    pub fn set_performance(&mut self, performance: MapPerformanceOptions) {
+        self.performance = performance;
+    }
+
+    /// Check if rendering should occur based on performance settings
+    pub fn should_render(&self) -> bool {
+        self.performance.framerate.should_render(self.last_render_time)
+    }
+
+    /// Check if updating should occur based on performance settings
+    pub fn should_update(&self) -> bool {
+        self.performance.framerate.should_update(self.last_update_time)
+    }
+
+    /// Mark that a render has occurred (for timing tracking)
+    pub fn mark_render(&mut self) {
+        self.last_render_time = std::time::Instant::now();
+    }
+
+    /// Mark that an update has occurred (for timing tracking)
+    pub fn mark_update(&mut self) {
+        self.last_update_time = std::time::Instant::now();
     }
 
     /// Processes queued events (call this regularly)

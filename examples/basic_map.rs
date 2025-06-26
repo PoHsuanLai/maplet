@@ -1,8 +1,11 @@
 use eframe::egui;
-use map_rs::{
+use maplet::{
     core::{geo::LatLng, geo::Point, map::Map},
     layers::tile::TileLayer,
-    ui::widget::{MapWidget, MapWidgetConfig, MapWidgetExt},
+    ui::{
+        widget::{MapWidget, MapWidgetConfig, MapCursor},
+        MapWidgetExt,
+    },
 };
 
 /// Example application using the map widget
@@ -20,7 +23,9 @@ impl MapApp {
         // Create a map centered on New York City
         let center = LatLng::new(40.7128, -74.0060);
         let zoom = 10.0;
-        let size = Point::new(800.0, 600.0);
+        // Use a placeholder size – the widget will replace it with the real
+        // dimensions on the first layout pass via `set_size`.
+        let size = Point::new(1.0, 1.0);
 
         let mut map = Map::new(center, zoom, size);
 
@@ -37,7 +42,7 @@ impl MapApp {
             show_attribution: true,
             min_zoom: 1.0,
             max_zoom: 18.0,
-            cursor: map_rs::ui::widget::MapCursor::Default,
+            cursor: MapCursor::Default,
             background_color: egui::Color32::from_rgb(230, 230, 230),
             attribution: "© OpenStreetMap contributors".to_string(),
             zoom_snap: 1.0,
@@ -193,7 +198,8 @@ impl eframe::App for MapApp {
     }
 }
 
-fn main() -> Result<(), eframe::Error> {
+#[tokio::main]
+async fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Initialize logging
 
     let options = eframe::NativeOptions {

@@ -1,14 +1,20 @@
 use crate::{
     core::{
+        bounds::Bounds,
         geo::{LatLng, LatLngBounds, Point},
         viewport::Viewport,
     },
+    data::geojson::{GeoJson, GeoJsonFeature},
     layers::base::{LayerProperties, LayerTrait, LayerType},
-    rendering::context::RenderContext,
     Result,
 };
-use async_trait::async_trait;
+
+#[cfg(feature = "render")]
+use crate::rendering::context::RenderContext;
+
+#[cfg(feature = "egui")]
 use egui::Color32;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -575,6 +581,7 @@ impl VectorLayer {
         viewport: &Viewport,
         feature_data: &VectorFeatureData,
     ) -> Result<()> {
+        #[cfg(feature = "render")]
         use crate::rendering::context::{LineRenderStyle, PointRenderStyle, PolygonRenderStyle};
 
         let opacity_multiplier = self.opacity();
@@ -689,7 +696,6 @@ impl VectorLayer {
     }
 }
 
-#[async_trait]
 impl LayerTrait for VectorLayer {
     fn id(&self) -> &str {
         &self.properties.id
@@ -743,7 +749,7 @@ impl LayerTrait for VectorLayer {
         bounds
     }
 
-    async fn render(&self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    fn render(&self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
         if !self.visible() {
             return Ok(());
         }

@@ -1,0 +1,17 @@
+[package]
+name = "maplet-app"
+version = "0.1.0"
+edition = "2021"
+description = "Default map viewer application built with maplet"
+license = "MIT"
+
+[[bin]]
+name = "maplet-app"
+path = "src/main.rs"
+
+[dependencies]
+maplet = { path = "..", features = ["app", "debug"] }
+tokio = { version = "1.36", features = ["rt-multi-thread", "macros"] }
+env_logger = "0.10"
+eframe = "0.26"
+egui = "0.26" 

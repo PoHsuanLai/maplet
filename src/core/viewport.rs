@@ -14,6 +14,8 @@ pub struct Viewport {
     pub min_zoom: f64,
     /// The maximum allowed zoom level
     pub max_zoom: f64,
+    /// Pixel origin for coordinate transformations (to avoid precision issues)
+    pixel_origin: Option<Point>,
 }
 
 impl Viewport {
@@ -25,22 +27,26 @@ impl Viewport {
             size,
             min_zoom: 0.0,
             max_zoom: 18.0,
+            pixel_origin: None,
         }
     }
 
     /// Sets the center of the viewport
     pub fn set_center(&mut self, center: LatLng) {
         self.center = self.clamp_center(center);
+        self.update_pixel_origin();
     }
 
     /// Sets the zoom level, clamping to valid range
     pub fn set_zoom(&mut self, zoom: f64) {
         self.zoom = zoom.clamp(self.min_zoom, self.max_zoom);
+        self.update_pixel_origin();
     }
 
     /// Sets the viewport size
     pub fn set_size(&mut self, size: Point) {
         self.size = size;
+        self.update_pixel_origin();
     }
 
     /// Sets the zoom limits
@@ -55,71 +61,115 @@ impl Viewport {
         2_f64.powf(self.zoom)
     }
 
-    /// Converts a geographical coordinate to screen pixel coordinates (top-left origin)
-    /// using standard Web-Mercator world pixel math.
-    pub fn lat_lng_to_pixel(&self, lat_lng: &LatLng) -> Point {
-        // World pixel coordinates for the target point and the viewport center
-        let world_scale = 256.0 * self.scale();
-
-        // Helper to convert to world pixel (unwrapped)
-        fn to_world_px(lat: f64, lng: f64, scale: f64) -> (f64, f64) {
-            // Clamp latitude to the Web-Mercator limit to avoid infinity at the poles
-            let lat = LatLng::clamp_lat(lat);
-            let lat_rad = lat.to_radians();
-
-            let x = (lng + 180.0) / 360.0 * scale;
-            let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * scale;
-            (x, y)
-        }
-
-        let (center_x, center_y) = to_world_px(self.center.lat, self.center.lng, world_scale);
-        let (pt_x, pt_y) = to_world_px(lat_lng.lat, lat_lng.lng, world_scale);
-
-        let dx = pt_x - center_x;
-        let dy = pt_y - center_y;
-
-        Point::new(self.size.x / 2.0 + dx, self.size.y / 2.0 + dy)
+    /// Projects a LatLng to world pixel coordinates at the given zoom level
+    /// This matches Leaflet's CRS.EPSG3857.latLngToPoint method
+    pub fn project(&self, lat_lng: &LatLng, zoom: Option<f64>) -> Point {
+        let z = zoom.unwrap_or(self.zoom);
+        let scale = 256.0 * 2_f64.powf(z);
+        
+        // Spherical Mercator projection (matches Leaflet's SphericalMercator)
+        let d = std::f64::consts::PI / 180.0;
+        let max_lat = 85.0511287798; // Leaflet's SphericalMercator.MAX_LATITUDE
+        let lat = lat_lng.lat.clamp(-max_lat, max_lat);
+        let lat_rad = lat * d;
+        let sin_lat = lat_rad.sin();
+        
+        // Leaflet's transformation: scale = 0.5 / (π * R), offset = 0.5
+        // Where R = 6378137 (earth radius)
+        let x = (lat_lng.lng + 180.0) / 360.0 * scale;
+        let y = (0.5 - 0.25 * ((1.0 + sin_lat) / (1.0 - sin_lat)).ln() / std::f64::consts::PI) * scale;
+        
+        Point::new(x, y)
     }
 
-    /// Converts screen pixel coordinates (relative to viewport) back to geographical coordinates.
+    /// Unprojects world pixel coordinates back to LatLng at the given zoom level
+    /// This matches Leaflet's CRS.EPSG3857.pointToLatLng method
+    pub fn unproject(&self, point: &Point, zoom: Option<f64>) -> LatLng {
+        let z = zoom.unwrap_or(self.zoom);
+        let scale = 256.0 * 2_f64.powf(z);
+        
+        let d = 180.0 / std::f64::consts::PI;
+        let lng = point.x / scale * 360.0 - 180.0;
+        
+        let y_normalized = point.y / scale;
+        let lat_rad = std::f64::consts::FRAC_PI_2 - 2.0 * ((0.5 - y_normalized) * 2.0 * std::f64::consts::PI).exp().atan();
+        let lat = lat_rad * d;
+        
+        LatLng::new(lat, lng)
+    }
+
+    /// Gets or calculates the pixel origin for this viewport
+    /// This is used to keep pixel coordinates manageable and avoid precision issues
+    pub fn get_pixel_origin(&self) -> Point {
+        self.pixel_origin.unwrap_or_else(|| {
+            self.project(&self.center, None).floor()
+        })
+    }
+
+    /// Updates the pixel origin based on current center
+    fn update_pixel_origin(&mut self) {
+        self.pixel_origin = Some(self.project(&self.center, None).floor());
+    }
+
+    /// Converts a geographical coordinate to screen pixel coordinates (container relative)
+    /// This matches Leaflet's latLngToContainerPoint method
+    pub fn lat_lng_to_pixel(&self, lat_lng: &LatLng) -> Point {
+        let layer_point = self.lat_lng_to_layer_point(lat_lng);
+        self.layer_point_to_container_point(&layer_point)
+    }
+
+    /// Converts screen pixel coordinates back to geographical coordinates
+    /// This matches Leaflet's containerPointToLatLng method
     pub fn pixel_to_lat_lng(&self, pixel: &Point) -> LatLng {
-        let world_scale = 256.0 * self.scale();
+        let layer_point = self.container_point_to_layer_point(pixel);
+        self.layer_point_to_lat_lng(&layer_point)
+    }
 
-        // Helper to convert from world pixel to lat/lng
-        fn from_world_px(x: f64, y: f64, scale: f64) -> LatLng {
-            let lng = x / scale * 360.0 - 180.0;
-            // Robust inverse Web-Mercator using equirectangular y
-            // 1. Convert from world pixel Y back to normalized Mercator (0..1).
-            let merc_y = y / scale; // 0 at top, 1 at bottom
-            // 2. Transform: lat = 90° - 360° * atan(exp((0.5 - merc_y) * 2π)) / π
-            let lat_rad = std::f64::consts::FRAC_PI_2
-                - 2.0 * ((0.5 - merc_y) * 2.0 * std::f64::consts::PI).exp().atan();
-            let lat = lat_rad.to_degrees();
-            LatLng::new(lat, lng)
-        }
+    /// Converts LatLng to layer point (relative to pixel origin)
+    /// This matches Leaflet's latLngToLayerPoint method
+    pub fn lat_lng_to_layer_point(&self, lat_lng: &LatLng) -> Point {
+        let projected_point = self.project(lat_lng, None);
+        projected_point.subtract(&self.get_pixel_origin())
+    }
 
-        // World pixel of viewport center
-        let center_world_x = (self.center.lng + 180.0) / 360.0 * world_scale;
-        let lat_rad_center = LatLng::clamp_lat(self.center.lat).to_radians();
-        let center_world_y = (1.0 - (lat_rad_center.tan() + 1.0 / lat_rad_center.cos()).ln() / std::f64::consts::PI) / 2.0 * world_scale;
+    /// Converts layer point back to LatLng
+    /// This matches Leaflet's layerPointToLatLng method
+    pub fn layer_point_to_lat_lng(&self, point: &Point) -> LatLng {
+        let projected_point = point.add(&self.get_pixel_origin());
+        self.unproject(&projected_point, None)
+    }
 
-        // World pixel of requested screen pixel
-        let world_x = center_world_x + (pixel.x - self.size.x / 2.0);
-        let world_y = center_world_y + (pixel.y - self.size.y / 2.0);
+    /// Converts layer point to container point (screen coordinates)
+    /// This matches Leaflet's layerPointToContainerPoint method
+    pub fn layer_point_to_container_point(&self, point: &Point) -> Point {
+        // In a simple case, this is just centered on the viewport
+        // In Leaflet, this adds the map pane position, but for now we'll center it
+        Point::new(
+            point.x + self.size.x / 2.0,
+            point.y + self.size.y / 2.0
+        )
+    }
 
-        from_world_px(world_x, world_y, world_scale)
+    /// Converts container point to layer point
+    /// This matches Leaflet's containerPointToLayerPoint method
+    pub fn container_point_to_layer_point(&self, point: &Point) -> Point {
+        Point::new(
+            point.x - self.size.x / 2.0,
+            point.y - self.size.y / 2.0
+        )
     }
 
     /// Pans the viewport by the given pixel offset
     pub fn pan(&mut self, delta: Point) {
-        let current_pixel = Point::new(self.size.x / 2.0, self.size.y / 2.0);
-        let new_pixel = current_pixel.subtract(&delta);
-        self.center = self.clamp_center(self.pixel_to_lat_lng(&new_pixel));
+        let current_layer_point = Point::new(0.0, 0.0); // Center of viewport in layer coordinates
+        let new_layer_point = current_layer_point.subtract(&delta);
+        let new_center = self.layer_point_to_lat_lng(&new_layer_point);
+        self.set_center(new_center);
     }
 
     /// Zooms the viewport to a specific level at a given point
+    /// This matches Leaflet's setZoomAround method
     pub fn zoom_to(&mut self, zoom: f64, focus_point: Option<Point>) {
-        // --- New implementation mirrors Leaflet's `setZoomAround` logic ---
         let new_zoom = zoom.clamp(self.min_zoom, self.max_zoom);
         let old_zoom = self.zoom;
 
@@ -131,47 +181,21 @@ impl Viewport {
         // Screen point we zoom around (defaults to viewport center)
         let focus_screen = focus_point.unwrap_or(Point::new(self.size.x / 2.0, self.size.y / 2.0));
 
-        // Scale factor between zooms
-        let scale_factor = 2_f64.powf(new_zoom - old_zoom);
+        // Get the LatLng at the focus point before zoom
+        let focus_latlng = self.pixel_to_lat_lng(&focus_screen);
 
-        // Vector from viewport center to the focus point (in screen px)
-        let view_half = Point::new(self.size.x / 2.0, self.size.y / 2.0);
-        let center_offset_screen = focus_screen.subtract(&view_half);
-
-        // How much the center must shift in world-pixel coordinates so that the focus stays stationary
-        let offset = center_offset_screen.multiply(1.0 - 1.0 / scale_factor);
-
-        // Helper closures for world-pixel conversions at an arbitrary scale
-        fn to_world_px(lat: f64, lng: f64, world_scale: f64) -> (f64, f64) {
-            let lat = crate::core::geo::LatLng::clamp_lat(lat);
-            let lat_rad = lat.to_radians();
-            let x = (lng + 180.0) / 360.0 * world_scale;
-            let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * world_scale;
-            (x, y)
-        }
-
-        fn from_world_px(x: f64, y: f64, world_scale: f64) -> crate::core::geo::LatLng {
-            let lng = x / world_scale * 360.0 - 180.0;
-            let merc_y = y / world_scale;
-            let lat_rad = std::f64::consts::FRAC_PI_2
-                - 2.0 * ((0.5 - merc_y) * 2.0 * std::f64::consts::PI).exp().atan();
-            let lat = lat_rad.to_degrees();
-            crate::core::geo::LatLng::new(lat, lng)
-        }
-
-        // Center in world-pixel space at *new* zoom level
-        let world_scale_new = 256.0 * 2_f64.powf(new_zoom);
-        let (center_world_x, center_world_y) = to_world_px(self.center.lat, self.center.lng, world_scale_new);
-
-        // Apply offset so that the focus point remains stationary
-        let new_center_world_x = center_world_x + offset.x;
-        let new_center_world_y = center_world_y + offset.y;
-
-        let new_center_latlng = from_world_px(new_center_world_x, new_center_world_y, world_scale_new);
-
-        // Commit
+        // Update zoom
         self.zoom = new_zoom;
-        self.center = self.clamp_center(new_center_latlng);
+        self.update_pixel_origin();
+
+        // Calculate where the focus point would be after zoom
+        let new_focus_screen = self.lat_lng_to_pixel(&focus_latlng);
+
+        // Calculate the offset needed to keep the focus point stationary
+        let offset = new_focus_screen.subtract(&focus_screen);
+
+        // Pan to compensate for the offset
+        self.pan(offset);
     }
 
     /// Zooms in by one level
@@ -249,10 +273,18 @@ impl Viewport {
 
         // Helper for conversions (duplicated logic from lat_lng_to_pixel)
         fn to_world_px(lat: f64, lng: f64, scale: f64) -> (f64, f64) {
-            let lat = LatLng::clamp_lat(lat);
             let lat_rad = lat.to_radians();
+            let mut y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI)
+                / 2.0
+                * scale;
+
+            if y < 0.0 {
+                y = 0.0;
+            } else if y > scale {
+                y = scale;
+            }
+
             let x = (lng + 180.0) / 360.0 * scale;
-            let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * scale;
             (x, y)
         }
 

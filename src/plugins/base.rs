@@ -1,10 +1,12 @@
 use crate::{
     core::{map::Map, viewport::Viewport},
     input::events::InputEvent,
-    rendering::context::RenderContext,
     Result,
 };
 use async_trait::async_trait;
+
+#[cfg(feature = "render")]
+use crate::rendering::context::RenderContext;
 
 #[async_trait]
 pub trait PluginTrait: Send + Sync {
@@ -21,7 +23,13 @@ pub trait PluginTrait: Send + Sync {
     fn update(&mut self, delta_time: f64) -> Result<()> {
         Ok(())
     }
-    async fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    #[cfg(feature = "render")]
+    fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(not(feature = "render"))]
+    fn render(&mut self, _context: &mut (), _viewport: &Viewport) -> Result<()> {
         Ok(())
     }
 }

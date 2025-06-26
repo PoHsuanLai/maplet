@@ -6,13 +6,18 @@ use crate::{
         viewport::Viewport,
     },
     input::events::InputEvent,
+    layers::vector::VectorLayer,
     plugins::base::PluginTrait,
-    rendering::context::RenderContext,
-    spatial::index::{SpatialIndex, SpatialItem},
     Result,
 };
+
+#[cfg(feature = "render")]
+use crate::rendering::context::RenderContext;
+
+#[cfg(feature = "egui")]
 use egui::Color32;
 use std::collections::HashMap;
+use crate::spatial::index::{SpatialIndex, SpatialItem};
 
 /// Represents a data point for the heatmap
 #[derive(Debug, Clone)]
@@ -309,9 +314,6 @@ impl HeatmapPlugin {
     }
 }
 
-use async_trait::async_trait;
-
-#[async_trait]
 impl PluginTrait for HeatmapPlugin {
     fn name(&self) -> &str {
         "Heatmap"
@@ -333,7 +335,7 @@ impl PluginTrait for HeatmapPlugin {
         Ok(())
     }
 
-    async fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
         if !self.config.visible || self.data_points.is_empty() {
             return Ok(());
         }

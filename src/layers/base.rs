@@ -1,10 +1,13 @@
 use crate::{
-    core::viewport::Viewport, input::events::InputEvent, rendering::context::RenderContext, Result,
+    core::viewport::Viewport, 
+    input::events::InputEvent, 
+    Result,
 };
-use async_trait::async_trait;
+
+#[cfg(feature = "render")]
+use crate::rendering::context::RenderContext;
 
 /// Base trait that all layers must implement
-#[async_trait]
 pub trait LayerTrait: Send + Sync {
     /// Gets the unique identifier for this layer
     fn id(&self) -> &str;
@@ -43,8 +46,15 @@ pub trait LayerTrait: Send + Sync {
         Ok(())
     }
 
-    /// Renders the layer
-    async fn render(&self, context: &mut RenderContext, viewport: &Viewport) -> Result<()>;
+    /// Renders the layer (when render feature is enabled)
+    #[cfg(feature = "render")]
+    fn render(&self, context: &mut RenderContext, viewport: &Viewport) -> Result<()>;
+
+    /// No-op render method when render feature is disabled
+    #[cfg(not(feature = "render"))]
+    fn render(&self, _context: &mut (), _viewport: &Viewport) -> Result<()> {
+        Ok(()) // Default to no-op when rendering is disabled
+    }
 
     /// Handles input events
     fn handle_input(&mut self, input: &InputEvent) -> Result<()> {
@@ -171,7 +181,6 @@ impl BaseLayer {
     }
 }
 
-#[async_trait]
 impl LayerTrait for BaseLayer {
     fn id(&self) -> &str {
         &self.properties.id
@@ -209,8 +218,14 @@ impl LayerTrait for BaseLayer {
         self.properties.visible = visible;
     }
 
-    async fn render(&self, _context: &mut RenderContext, _viewport: &Viewport) -> Result<()> {
+    #[cfg(feature = "render")]
+    fn render(&self, _context: &mut RenderContext, _viewport: &Viewport) -> Result<()> {
         // Base implementation does nothing
+        Ok(())
+    }
+
+    #[cfg(not(feature = "render"))]
+    fn render(&self, _context: &mut (), _viewport: &Viewport) -> Result<()> {
         Ok(())
     }
 

@@ -68,6 +68,7 @@ impl<T> PointDistance for SpatialItem<T> {
 }
 
 /// R-tree based spatial index (replaces the previous linear index)
+#[derive(Clone, Debug)]
 pub struct SpatialIndex<T> {
     rtree: RTree<SpatialItem<T>>,
     bounds: Option<Bounds>,

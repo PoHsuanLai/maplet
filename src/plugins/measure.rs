@@ -1,16 +1,22 @@
 use crate::{
     core::{
-        geo::Point,
+        bounds::Bounds,
+        geo::{LatLng, Point},
         map::Map,
         viewport::Viewport,
     },
     input::events::InputEvent,
+    layers::vector::VectorLayer,
     plugins::base::PluginTrait,
-    rendering::context::RenderContext,
     Result,
 };
-use async_trait::async_trait;
+
+#[cfg(feature = "render")]
+use crate::rendering::context::RenderContext;
+
+#[cfg(feature = "egui")]
 use egui::Color32;
+
 use std::collections::HashMap;
 
 /// Measurement tool types
@@ -513,7 +519,6 @@ impl MeasurePlugin {
     }
 }
 
-#[async_trait]
 impl PluginTrait for MeasurePlugin {
     fn name(&self) -> &str {
         "Measure"
@@ -537,7 +542,7 @@ impl PluginTrait for MeasurePlugin {
         Ok(())
     }
 
-    async fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
         if !self.active || !self.config.enabled {
             return Ok(());
         }

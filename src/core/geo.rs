@@ -99,6 +99,10 @@ impl Point {
         let dy = self.y - other.y;
         (dx * dx + dy * dy).sqrt()
     }
+
+    pub fn floor(&self) -> Point {
+        Point::new(self.x.floor(), self.y.floor())
+    }
 }
 
 /// Represents a bounding box of geographical coordinates

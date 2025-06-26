@@ -2,7 +2,7 @@ use crate::{
     layers::base::{LayerProperties, LayerTrait, LayerType},
     Result,
 };
-use async_trait::async_trait;
+
 
 pub struct CanvasLayer {
     properties: LayerProperties,
@@ -15,7 +15,6 @@ impl CanvasLayer {
     }
 }
 
-#[async_trait]
 impl LayerTrait for CanvasLayer {
     fn id(&self) -> &str {
         &self.properties.id
@@ -52,9 +51,12 @@ impl LayerTrait for CanvasLayer {
         Ok(())
     }
 
-    async fn render(
+    fn render(
         &self,
+        #[cfg(feature = "render")]
         _context: &mut crate::rendering::context::RenderContext,
+        #[cfg(not(feature = "render"))]
+        _context: &mut (),
         _viewport: &crate::core::viewport::Viewport,
     ) -> Result<()> {
         Ok(())

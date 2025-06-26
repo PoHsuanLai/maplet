@@ -25,6 +25,9 @@ use std::sync::{Arc, Mutex};
 use std::num::NonZeroUsize;
 use lru::LruCache;
 use pollster;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use image;
 
 /// Configuration for the map widget
 #[derive(Debug, Clone)]
@@ -63,7 +66,7 @@ impl Default for MapWidgetConfig {
             zoom_delta: 1.0,
             cursor: MapCursor::Default,
             background_color: Color32::from_rgb(200, 200, 200),
-            attribution: "© OpenStreetMap contributors".to_string(),
+            attribution: "© Po Hsuan Lai".to_string(),
         }
     }
 }
@@ -174,10 +177,22 @@ impl MapWidget {
 
     /// Set the widget size
     pub fn set_size(&mut self, size: Vec2) {
+        // Only proceed if the size actually changed to avoid redundant work
+        if self.size == size {
+            return;
+        }
+
         self.size = size;
+
         if let Ok(mut map) = self.map.lock() {
+            // Update the underlying viewport so that future projections use
+            // the correct dimensions on the very next frame.
             map.viewport_mut()
                 .set_size(Point::new(size.x as f64, size.y as f64));
+
+            // Request tile updates for all tile layers - the async loader will handle them
+            // No blocking needed since we just queue the requests
+            self.needs_repaint = true;
         }
     }
 
@@ -254,6 +269,7 @@ impl MapWidget {
         self.last_frame_time = Some(now);
 
         if let Err(e) = self.update(delta_time) {
+            #[cfg(feature = "debug")]
             log::error!("Failed to update map: {}", e);
         }
 
@@ -271,7 +287,13 @@ impl MapWidget {
 
         // Ask egui for a repaint only if something actually changed (dragging, animation, tiles loading)
         if self.needs_repaint {
-            ui.ctx().request_repaint();
+            if self.drag_state.is_dragging || self.transition_manager.has_active_transition() {
+                // Immediate repaint for interactive elements
+                ui.ctx().request_repaint();
+            } else {
+                // Throttled repaint for tile loading (every 16ms for smooth 60fps)
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+            }
             // Reset flag so that we only repaint continuously while it is needed
             self.needs_repaint = false;
         }
@@ -414,99 +436,88 @@ impl MapWidget {
             if let Ok(mut render_ctx) = crate::rendering::context::RenderContext::new(width, height) {
                 let _ = render_ctx.begin_frame();
 
-                // Call map.render (async)
-                let _ = pollster::block_on(map.render(&mut render_ctx));
+                // Call map.render (now sync)
+                let _ = map.render(&mut render_ctx);
 
                 // Build meshes grouped by texture for efficient batching
                 let mut mesh_map: std::collections::HashMap<egui::TextureId, Mesh> = std::collections::HashMap::new();
 
                 log::debug!("drawing queue has {} commands", render_ctx.get_drawing_queue().len());
 
-                // Helper closure to obtain a texture handle (async decode + upload on first use)
-                let mut get_texture = |key: &str, bytes: &[u8]| -> Option<egui::TextureHandle> {
-                    log::trace!("get_texture lookup key={}", key);
-                    if let Some(handle) = self.tile_textures.get(key) {
-                        log::trace!("texture cache hit: {}", key);
-                        return Some(handle.clone());
-                    }
-
-                    // Decode on a background thread using std::thread to avoid requiring a Tokio runtime.
-                    let bytes_owned = bytes.to_vec();
-                    let handle_join = std::thread::spawn(move || {
-                        // Attempt raw RGBA first
-                        let pixel_count = bytes_owned.len() / 4;
-                        let side = (pixel_count as f32).sqrt() as usize;
-                        if side * side * 4 == bytes_owned.len() {
-                            return Some((bytes_owned, [side, side]));
-                        }
-
-                        // PNG decode fallback
-                        match image::load_from_memory(&bytes_owned) {
-                            Ok(img) => {
-                                let img_rgba = img.to_rgba8();
-                                let size = [img_rgba.width() as usize, img_rgba.height() as usize];
-                                let pixels = img_rgba.into_raw();
-                                Some((pixels, size))
-                            }
-                            Err(_) => None,
-                        }
-                    });
-
-                    let decode_result = handle_join.join().unwrap_or(None);
-
-                    let (pixels, size) = decode_result?;
-
-                    log::debug!("decoded texture {} bytes={} size={}x{}", key, pixels.len(), size[0], size[1]);
-
-                    // Upload to egui texture registry (on this thread)
-                    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                    let handle = ui.ctx().load_texture(key.to_owned(), color_image, egui::TextureOptions::default());
-
-                    self.tile_textures.put(key.to_owned(), handle.clone());
-                    log::debug!("uploaded texture {} ({}x{})", key, size[0], size[1]);
-                    Some(handle)
-                };
-
                 for cmd in render_ctx.get_drawing_queue() {
                     match cmd {
                         crate::rendering::context::DrawCommand::Tile { data, bounds, .. } => {
-                            let key = format!("tile-{}-{}-{}-{}", bounds.0.x, bounds.0.y, bounds.1.x, bounds.1.y);
+                            // Generate a stable cache key from the tile bytes so the texture can
+                            // be reused while the map is panned. Using a quick hash avoids
+                            // re-decoding and uploading identical images each frame.
+                            let mut hasher = DefaultHasher::new();
+                            // Hash some of the bytes for speed (first 4 KB or full length if smaller)
+                            let sample_len = data.len().min(4096);
+                            data[..sample_len].hash(&mut hasher);
+                            data.len().hash(&mut hasher);
+                            let hash = hasher.finish();
+                            let key = format!("tile-{hash:x}");
 
-                            let tex_handle = match get_texture(&key, data) {
-                                Some(h) => h,
-                                None => continue,
+                            // Check cache first
+                            let tex_handle = if let Some(handle) = self.tile_textures.get(&key) {
+                                log::trace!("texture cache hit: {}", key);
+                                Some(handle.clone())
+                            } else {
+                                // Try to decode immediately for small images
+                                if data.len() < 50_000 {
+                                    if let Some((pixels, size)) = self.decode_image_immediate(data) {
+                                        log::debug!("decoded texture {} bytes={} size={}x{}", key, pixels.len(), size[0], size[1]);
+
+                                        // Upload to egui texture registry
+                                        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                                        let handle = ui.ctx().load_texture(key.clone(), color_image, egui::TextureOptions::default());
+
+                                        self.tile_textures.put(key, handle.clone());
+                                        log::debug!("uploaded texture ({}x{})", size[0], size[1]);
+                                        Some(handle)
+                                    } else {
+                                        log::debug!("Failed to decode image data");
+                                        None
+                                    }
+                                } else {
+                                    // Skip large images for now to avoid blocking
+                                    log::debug!("Skipping large image ({} bytes) to avoid blocking", data.len());
+                                    None
+                                }
                             };
 
-                            let (min_point, max_point) = *bounds;
-                            let dest_min_vec = rect.min + Vec2::new(min_point.x as f32, min_point.y as f32);
-                            let dest_max_vec = rect.min + Vec2::new(max_point.x as f32, max_point.y as f32);
+                            if let Some(tex_handle) = tex_handle {
+                                let (min_point, max_point) = *bounds;
+                                let dest_min_vec = rect.min + Vec2::new(min_point.x as f32, min_point.y as f32);
+                                let dest_max_vec = rect.min + Vec2::new(max_point.x as f32, max_point.y as f32);
 
-                            let tl = Pos2::new(dest_min_vec.x, dest_min_vec.y);
-                            let tr = Pos2::new(dest_max_vec.x, dest_min_vec.y);
-                            let br = Pos2::new(dest_max_vec.x, dest_max_vec.y);
-                            let bl = Pos2::new(dest_min_vec.x, dest_max_vec.y);
+                                let tl = Pos2::new(dest_min_vec.x, dest_min_vec.y);
+                                let tr = Pos2::new(dest_max_vec.x, dest_min_vec.y);
+                                let br = Pos2::new(dest_max_vec.x, dest_max_vec.y);
+                                let bl = Pos2::new(dest_min_vec.x, dest_max_vec.y);
 
-                            let mesh = mesh_map.entry(tex_handle.id()).or_insert_with(|| {
-                                let mut m = Mesh::default();
-                                m.texture_id = tex_handle.id();
-                                m
-                            });
+                                let mesh = mesh_map.entry(tex_handle.id()).or_insert_with(|| {
+                                    let mut m = Mesh::default();
+                                    m.texture_id = tex_handle.id();
+                                    m
+                                });
 
-                            let base_idx = mesh.vertices.len() as u32;
+                                let base_idx = mesh.vertices.len() as u32;
 
-                            mesh.vertices.push(Vertex { pos: tl, uv: Pos2::new(0.0, 0.0), color: Color32::WHITE });
-                            mesh.vertices.push(Vertex { pos: tr, uv: Pos2::new(1.0, 0.0), color: Color32::WHITE });
-                            mesh.vertices.push(Vertex { pos: br, uv: Pos2::new(1.0, 1.0), color: Color32::WHITE });
-                            mesh.vertices.push(Vertex { pos: bl, uv: Pos2::new(0.0, 1.0), color: Color32::WHITE });
+                                mesh.vertices.push(Vertex { pos: tl, uv: Pos2::new(0.0, 0.0), color: Color32::WHITE });
+                                mesh.vertices.push(Vertex { pos: tr, uv: Pos2::new(1.0, 0.0), color: Color32::WHITE });
+                                mesh.vertices.push(Vertex { pos: br, uv: Pos2::new(1.0, 1.0), color: Color32::WHITE });
+                                mesh.vertices.push(Vertex { pos: bl, uv: Pos2::new(0.0, 1.0), color: Color32::WHITE });
 
-                            mesh.indices.extend_from_slice(&[
-                                base_idx,
-                                base_idx + 1,
-                                base_idx + 2,
-                                base_idx,
-                                base_idx + 2,
-                                base_idx + 3,
-                            ]);
+                                mesh.indices.extend_from_slice(&[
+                                    base_idx,
+                                    base_idx + 1,
+                                    base_idx + 2,
+                                    base_idx,
+                                    base_idx + 2,
+                                    base_idx + 3,
+                                ]);
+                            }
                         }
                         crate::rendering::context::DrawCommand::TileTextured { texture_id, bounds, .. } => {
                             let mesh = mesh_map.entry(*texture_id).or_insert_with(|| {
@@ -705,8 +716,9 @@ impl MapWidget {
     /// Handle drag events
     fn handle_drag(&mut self, delta: Point) -> Result<EventHandled> {
         if let Ok(mut map) = self.map.lock() {
-            // Pan the map
-            map.pan(Point::new(-delta.x, -delta.y))?;
+            // Pan in the same direction as the drag delta so the map content
+            // follows the cursor (matching Leaflet's behaviour).
+            map.pan(delta)?;
 
             // Trigger viewport changed callback
             if let Some(callback) = &self.on_viewport_changed {
@@ -897,11 +909,12 @@ impl MapWidget {
         if let Ok(mut map) = self.map.lock() {
             map.update(delta_time)?;
 
-            // Load tiles for visible tile layers
+            // Process tile updates for visible tile layers (non-blocking)
             let viewport = map.viewport().clone();
             map.for_each_layer_mut(|layer| {
                 if let Some(tile_layer) = layer.as_any_mut().downcast_mut::<crate::layers::tile::TileLayer>() {
-                    let _ = pollster::block_on(tile_layer.update_tiles(&viewport));
+                    // Process completed downloads and queue new ones - all synchronous now
+                    let _ = tile_layer.update_tiles(&viewport);
                 }
             });
         }
@@ -943,6 +956,63 @@ impl MapWidget {
     /// Check if widget has focus
     pub fn has_focus(&self) -> bool {
         self.has_focus
+    }
+
+    /// Handle zoom animation and smooth transitions
+    fn handle_zoom_animation(&mut self, target_zoom: f64) {
+        if let Ok(mut map) = self.map.lock() {
+            let current_zoom = map.viewport().zoom;
+            let zoom_diff = (target_zoom - current_zoom).abs();
+            
+            // Only animate if zoom change is significant
+            if zoom_diff > 0.1 {
+                // Set the target zoom immediately for smooth UI
+                let _ = map.zoom_to(target_zoom, None);
+                
+                // Update tile layers with animation flag
+                let viewport = map.viewport().clone();
+                
+                // Update each tile layer with smooth zoom enabled
+                map.for_each_layer_mut(|layer| {
+                    if let Some(tile_layer) = layer.as_any_mut().downcast_mut::<crate::layers::tile::TileLayer>() {
+                        // Enable smooth zoom mode
+                        let mut options = tile_layer.options().clone();
+                        options.update_when_zooming = true;
+                        tile_layer.set_tile_options(options);
+                        
+                        // Update tiles with the new viewport
+                        let _ = tile_layer.update_tiles(&viewport);
+                    }
+                });
+                
+                // Request a repaint to show the animation
+                self.needs_repaint = true;
+            }
+        }
+    }
+
+    /// Decode image immediately (for small images only)
+    fn decode_image_immediate(&self, bytes: &[u8]) -> Option<(Vec<u8>, [usize; 2])> {
+        // Attempt raw RGBA first
+        let pixel_count = bytes.len() / 4;
+        let side = (pixel_count as f32).sqrt() as usize;
+        if side * side * 4 == bytes.len() {
+            return Some((bytes.to_vec(), [side, side]));
+        }
+
+        // PNG/JPEG decode fallback
+        match image::load_from_memory(bytes) {
+            Ok(img) => {
+                let img_rgba = img.to_rgba8();
+                let size = [img_rgba.width() as usize, img_rgba.height() as usize];
+                let pixels = img_rgba.into_raw();
+                Some((pixels, size))
+            }
+            Err(e) => {
+                log::warn!("Failed to decode image: {}", e);
+                None
+            }
+        }
     }
 }
 

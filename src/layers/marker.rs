@@ -3,8 +3,11 @@ use crate::{
     layers::base::{LayerProperties, LayerTrait, LayerType},
     Result,
 };
-use async_trait::async_trait;
+
 use once_cell::sync::Lazy;
+
+#[cfg(feature = "render")]
+use image;
 
 pub struct Marker {
     properties: LayerProperties,
@@ -21,7 +24,7 @@ impl Marker {
     }
 }
 
-static MARKER_BYTES: &[u8] = include_bytes!("../../assets/images/markey-icon.png");
+static MARKER_BYTES: &[u8] = include_bytes!("../../assets/images/marker-icon.png");
 
 // Decode once to RGBA
 static MARKER_RGBA: Lazy<Vec<u8>> = Lazy::new(|| {
@@ -32,7 +35,6 @@ static MARKER_RGBA: Lazy<Vec<u8>> = Lazy::new(|| {
 
 static MARKER_SIZE: (u32, u32) = (25, 41); // standard leaflet icon
 
-#[async_trait]
 impl LayerTrait for Marker {
     fn id(&self) -> &str {
         &self.properties.id
@@ -69,9 +71,12 @@ impl LayerTrait for Marker {
         Ok(())
     }
 
-    async fn render(
+    fn render(
         &self,
+        #[cfg(feature = "render")]
         context: &mut crate::rendering::context::RenderContext,
+        #[cfg(not(feature = "render"))]
+        context: &mut (),
         viewport: &crate::core::viewport::Viewport,
     ) -> Result<()> {
         // Convert position to pixel coords

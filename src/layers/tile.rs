@@ -1,18 +1,28 @@
 use crate::{
     core::{
-        geo::{LatLng, LatLngBounds, TileCoord},
+        geo::{LatLng, LatLngBounds, Point, TileCoord},
         viewport::Viewport,
     },
     layers::base::{LayerProperties, LayerTrait, LayerType},
-    rendering::context::RenderContext,
-    tiles::{loader::TileLoader, source::TileSource},
+
+    tiles::{
+        loader::{TileLoader, TilePriority},
+        source::TileSource,
+        cache::TileCache,
+    },
     Result,
 };
 use async_trait::async_trait;
 use std::{
     collections::HashMap,
-    sync::{mpsc::Receiver, mpsc::Sender, Arc, Mutex},
+    sync::Arc,
 };
+
+#[cfg(feature = "render")]
+use crate::rendering::context::RenderContext;
+
+#[cfg(feature = "debug")]
+use log;
 
 /// Configuration for a tile layer
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -37,6 +47,10 @@ pub struct TileLayerOptions {
     pub crossorigin: Option<String>,
     /// Whether to use HTTPS
     pub force_https: bool,
+    /// Whether to enable fade animations
+    pub fade_animation: bool,
+    /// Update tiles when zooming (smooth zoom)
+    pub update_when_zooming: bool,
 }
 
 impl Default for TileLayerOptions {
@@ -52,7 +66,87 @@ impl Default for TileLayerOptions {
             headers: HashMap::new(),
             crossorigin: None,
             force_https: true,
+            fade_animation: true,
+            update_when_zooming: true,
         }
+    }
+}
+
+/// Represents a zoom level with its tiles
+#[derive(Debug, Clone)]
+pub struct TileLevel {
+    /// Zoom level
+    pub zoom: u8,
+    /// Tiles at this level
+    pub tiles: HashMap<TileCoord, TileState>,
+    /// Transform scale for smooth zoom animations
+    pub scale: f64,
+    /// Transform translation for positioning
+    pub translation: Point,
+    /// Whether this level is active
+    pub active: bool,
+}
+
+impl TileLevel {
+    pub fn new(zoom: u8) -> Self {
+        Self {
+            zoom,
+            tiles: HashMap::new(),
+            scale: 1.0,
+            translation: Point::new(0.0, 0.0),
+            active: false,
+        }
+    }
+}
+
+/// State of a tile in the tile system
+#[derive(Debug, Clone)]
+pub struct TileState {
+    /// Tile coordinate
+    pub coord: TileCoord,
+    /// Tile data if loaded
+    pub data: Option<Arc<Vec<u8>>>,
+    /// Loading state
+    pub loading: bool,
+    /// Load error if any
+    pub error: Option<String>,
+    /// Whether tile is current (visible in viewport)
+    pub current: bool,
+    /// Whether tile should be retained
+    pub retain: bool,
+    /// Opacity for fade animations (0.0 to 1.0)
+    pub opacity: f32,
+    /// Time when tile finished loading (for fade animation)
+    pub loaded_time: Option<std::time::Instant>,
+}
+
+impl TileState {
+    pub fn new(coord: TileCoord) -> Self {
+        Self {
+            coord,
+            data: None,
+            loading: false,
+            error: None,
+            current: false,
+            retain: false,
+            opacity: 0.0,
+            loaded_time: None,
+        }
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.data.is_some()
+    }
+
+    pub fn mark_loaded(&mut self, data: Arc<Vec<u8>>) {
+        self.data = Some(data);
+        self.loading = false;
+        self.loaded_time = Some(std::time::Instant::now());
+    }
+
+    pub fn mark_error(&mut self, error: String) {
+        self.error = Some(error);
+        self.loading = false;
     }
 }
 
@@ -65,15 +159,17 @@ pub struct TileLayer {
     /// Tile source for fetching tiles
     tile_source: Box<dyn TileSource>,
     /// Tile loader for async tile fetching
-    tile_loader: Arc<TileLoader>,
-    /// Receiver for completed tile downloads
-    tile_rx: Mutex<Receiver<(TileCoord, Vec<u8>)>>,
-    /// Currently visible tiles
-    visible_tiles: HashMap<TileCoord, Arc<Vec<u8>>>,
-    /// Loading tiles (to avoid duplicate requests)
-    loading_tiles: HashMap<TileCoord, bool>,
-    /// Error tiles (failed to load)
-    error_tiles: HashMap<TileCoord, String>,
+    tile_loader: TileLoader,
+    /// Tile cache for storing downloaded tiles
+    tile_cache: TileCache,
+    /// Tile levels (different zoom levels)
+    levels: HashMap<u8, TileLevel>,
+    /// Current tile zoom level
+    tile_zoom: Option<u8>,
+    /// Whether currently loading
+    loading: bool,
+    /// Last update time for animation control
+    last_update: std::time::Instant,
 }
 
 impl TileLayer {
@@ -88,18 +184,16 @@ impl TileLayer {
         let tile_source: Box<dyn TileSource> =
             Box::new(crate::tiles::source::OpenStreetMapSource::default());
 
-        // Channel for tile completion messages
-        let (tx, rx): (Sender<(TileCoord, Vec<u8>)>, Receiver<(TileCoord, Vec<u8>)>) = std::sync::mpsc::channel();
-
         Self {
             properties,
             tile_source,
-            tile_loader: Arc::new(TileLoader::new(tx)),
-            tile_rx: Mutex::new(rx),
+            tile_loader: TileLoader::with_default_config(),
+            tile_cache: TileCache::with_default_capacity(),
             options,
-            visible_tiles: HashMap::new(),
-            loading_tiles: HashMap::new(),
-            error_tiles: HashMap::new(),
+            levels: HashMap::new(),
+            tile_zoom: None,
+            loading: false,
+            last_update: std::time::Instant::now(),
         }
     }
 
@@ -122,128 +216,339 @@ impl TileLayer {
 
     /// Get tiles that should be visible in the current viewport
     fn get_visible_tiles(&self, viewport: &Viewport) -> Vec<TileCoord> {
-        // ------------------------------------------------------------------
-        // 1. Determine zoom level within layer limits
-        // ------------------------------------------------------------------
-        let mut zoom = viewport.zoom.floor() as u8;
-        zoom = zoom.clamp(self.options.min_zoom, self.options.max_zoom);
+        // Determine the appropriate zoom level within layer limits
+        let zoom = viewport.zoom.floor() as u8;
+        let clamped_zoom = zoom.clamp(self.options.min_zoom, self.options.max_zoom);
 
-        let tiles_per_axis = 1u32 << zoom;
+        // Get tiled pixel bounds (matches Leaflet's _getTiledPixelBounds)
+        let center = viewport.center;
+        let pixel_center = viewport.project(&center, Some(clamped_zoom as f64)).floor();
+        let scale = 2_f64.powf(viewport.zoom - clamped_zoom as f64);
+        let half_size = Point::new(viewport.size.x / (scale * 2.0), viewport.size.y / (scale * 2.0));
+        
+        let pixel_bounds_min = pixel_center.subtract(&half_size);
+        let pixel_bounds_max = pixel_center.add(&half_size);
 
-        // ------------------------------------------------------------------
-        // 2. Convert viewport bounds to tile-space indices
-        // ------------------------------------------------------------------
-        let bounds = viewport.bounds();
+        // Convert pixel bounds to tile range (matches Leaflet's _pxBoundsToTileRange)
+        let tile_size = self.options.tile_size as f64;
+        let min_tile_x = (pixel_bounds_min.x / tile_size).floor() as i32;
+        let max_tile_x = (pixel_bounds_max.x / tile_size).floor() as i32;
+        let min_tile_y = (pixel_bounds_min.y / tile_size).floor() as i32;
+        let max_tile_y = (pixel_bounds_max.y / tile_size).floor() as i32;
 
-        // Helper closure to convert lat/lng → fractional tile indices
-        let ll_to_tile = |lat: f64, lng: f64| -> (f64, f64) {
-            let lat_clamped = LatLng::clamp_lat(lat);
-            let lat_rad = lat_clamped.to_radians();
-            let x = (lng + 180.0) / 360.0 * tiles_per_axis as f64;
-            let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI)
-                / 2.0
-                * tiles_per_axis as f64;
-            (x, y)
-        };
+        // Add buffer margin for smooth scrolling
+        let margin = 1;
+        let min_x = min_tile_x - margin;
+        let max_x = max_tile_x + margin;
+        let min_y = min_tile_y - margin;
+        let max_y = max_tile_y + margin;
 
-        let north_west_lat = bounds.north_east.lat;
-        let north_west_lng = bounds.south_west.lng;
-        let south_east_lat = bounds.south_west.lat;
-        let south_east_lng = bounds.north_east.lng;
-
-        let (min_x_f, max_y_f) = ll_to_tile(north_west_lat, north_west_lng);
-        let (max_x_f, min_y_f) = ll_to_tile(south_east_lat, south_east_lng);
-
-        let margin: i32 = 1; // one-tile buffer around view
-
-        let min_x = (min_x_f.floor() as i32 - margin).max(0) as u32;
-        let max_x = (max_x_f.ceil() as i32 + margin).min(tiles_per_axis as i32 - 1) as u32;
-        let min_y = (min_y_f.floor() as i32 - margin).max(0) as u32;
-        let max_y = (max_y_f.ceil() as i32 + margin).min(tiles_per_axis as i32 - 1) as u32;
+        // Calculate the tile range for this zoom level
+        let tiles_per_axis = 1u32 << clamped_zoom;
+        let max_tile_index = tiles_per_axis as i32 - 1;
 
         let mut tiles = Vec::new();
-        for x in min_x..=max_x {
-            for y in min_y..=max_y {
-                tiles.push(TileCoord { x, y, z: zoom });
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                // Clamp Y coordinates (no wrapping for Y)
+                if y < 0 || y > max_tile_index {
+                    continue;
+                }
+
+                // Wrap X coordinates around the world (matches Leaflet's _wrapCoords)
+                let mut wrapped_x = x;
+                while wrapped_x < 0 {
+                    wrapped_x += tiles_per_axis as i32;
+                }
+                while wrapped_x > max_tile_index {
+                    wrapped_x -= tiles_per_axis as i32;
+                }
+
+                let tile_coord = TileCoord {
+                    x: wrapped_x as u32,
+                    y: y as u32,
+                    z: clamped_zoom,
+                };
+
+                // Only add valid tiles
+                if self.is_valid_tile(&tile_coord) {
+                    tiles.push(tile_coord);
+                }
             }
         }
 
         tiles
     }
 
-    /// Load a tile asynchronously
-    fn load_tile(&mut self, coord: TileCoord) -> Result<()> {
-        if self.loading_tiles.contains_key(&coord) || self.visible_tiles.contains_key(&coord) {
-            return Ok(());
+    /// Check if a tile coordinate is valid for this layer
+    fn is_valid_tile(&self, coord: &TileCoord) -> bool {
+        // Check if within layer bounds if specified
+        if let Some(bounds) = &self.options.bounds {
+            let tile_bounds = self.tile_bounds(coord);
+            if !bounds.intersects(&tile_bounds) {
+                return false;
+            }
         }
 
-        self.loading_tiles.insert(coord, true);
+        // Check zoom level
+        if coord.z < self.options.min_zoom || coord.z > self.options.max_zoom {
+            return false;
+        }
 
-        let tile_source = &*self.tile_source;
-        self.tile_loader.start_download(tile_source, coord);
+        // Check if tile coordinates are within valid range for this zoom level
+        let tiles_per_axis = 1u32 << coord.z;
+        coord.x < tiles_per_axis && coord.y < tiles_per_axis
+    }
+
+    /// Get the geographical bounds of a tile
+    fn tile_bounds(&self, coord: &TileCoord) -> LatLngBounds {
+        let tile_size = self.options.tile_size as f64;
+        let scale = 256.0 * 2_f64.powf(coord.z as f64);
+        
+        // Calculate pixel coordinates of tile corners
+        let nw_x = coord.x as f64 * tile_size;
+        let nw_y = coord.y as f64 * tile_size;
+        let se_x = nw_x + tile_size;
+        let se_y = nw_y + tile_size;
+        
+        // Convert to geographical coordinates using spherical mercator
+        let d = 180.0 / std::f64::consts::PI;
+        
+        let nw_lng = nw_x / scale * 360.0 - 180.0;
+        let nw_lat_rad = std::f64::consts::FRAC_PI_2 - 2.0 * ((0.5 - nw_y / scale) * 2.0 * std::f64::consts::PI).exp().atan();
+        let nw_lat = nw_lat_rad * d;
+        
+        let se_lng = se_x / scale * 360.0 - 180.0;
+        let se_lat_rad = std::f64::consts::FRAC_PI_2 - 2.0 * ((0.5 - se_y / scale) * 2.0 * std::f64::consts::PI).exp().atan();
+        let se_lat = se_lat_rad * d;
+        
+        LatLngBounds::new(
+            LatLng::new(se_lat, nw_lng), // south-west
+            LatLng::new(nw_lat, se_lng), // north-east
+        )
+    }
+
+    /// Update tiles for the current viewport (main tile management method)
+    pub fn update_tiles(&mut self, viewport: &Viewport) -> Result<()> {
+        let now = std::time::Instant::now();
+        
+        // Only update frequently if there are new results or the viewport changed significantly
+        let should_update = now.duration_since(self.last_update) > std::time::Duration::from_millis(16) // ~60fps
+            || self.tile_loader.has_pending_results();
+            
+        if !should_update {
+            return Ok(());
+        }
+        
+        self.last_update = now;
+
+        // Process any completed tile downloads first
+        self.process_tile_results()?;
+
+        // Determine target zoom based on viewport
+        let target_zoom = viewport.zoom.round() as u8;
+        let target_zoom = target_zoom.max(self.options.min_zoom).min(self.options.max_zoom);
+
+        // Update tile opacity for fade animations
+        self.update_tile_opacity();
+
+        // Get currently visible tiles
+        let visible_coords = self.get_visible_tiles(viewport);
+        
+        // Only queue new tiles if we don't have too many pending
+        let pending_count = self.levels.values()
+            .flat_map(|level| level.tiles.values())
+            .filter(|tile| tile.loading)
+            .count();
+            
+        if pending_count < 20 {  // Limit pending downloads to prevent overload
+            // Update levels and queue missing tiles
+            self.update_levels(viewport, target_zoom)?;
+
+            // Queue visible tiles for loading if not already loaded or loading
+            let mut tiles_to_load = Vec::new();
+            for coord in visible_coords {
+                if let Some(level) = self.levels.get(&coord.z) {
+                    if let Some(tile) = level.tiles.get(&coord) {
+                        if !tile.is_loaded() && !tile.loading {
+                            tiles_to_load.push(coord);
+                        }
+                    } else {
+                        tiles_to_load.push(coord);
+                    }
+                }
+            }
+
+            if !tiles_to_load.is_empty() {
+                // Mark tiles as loading before queuing
+                for coord in &tiles_to_load {
+                    if let Some(level) = self.levels.get_mut(&coord.z) {
+                        level.tiles.entry(*coord)
+                            .and_modify(|tile| tile.loading = true)
+                            .or_insert_with(|| {
+                                let mut tile = TileState::new(*coord);
+                                tile.loading = true;
+                                tile.current = true;
+                                tile
+                            });
+                    }
+                }
+
+                #[cfg(feature = "debug")]
+                log::debug!("Queueing {} tiles for loading", tiles_to_load.len());
+
+                // Queue tiles for download
+                if let Err(e) = self.tile_loader.queue_tiles_batch(
+                    self.tile_source.as_ref(),
+                    tiles_to_load,
+                    crate::tiles::loader::TilePriority::Visible,
+                ) {
+                    log::warn!("Failed to queue tiles: {}", e);
+                }
+                
+                self.loading = true;
+            }
+        }
+
+        // Prune old tiles periodically
+        if now.duration_since(self.last_update) > std::time::Duration::from_secs(5) {
+            self.prune_tiles();
+        }
+
+        // Update zoom transforms for smooth zooming
+        self.update_zoom_transforms(viewport);
 
         Ok(())
     }
 
-    /// Update visible tiles based on current viewport
-    pub async fn update_tiles(&mut self, viewport: &Viewport) -> Result<()> {
-        let visible_coords = self.get_visible_tiles(viewport);
+    /// Update tile levels (similar to Leaflet's _updateLevels)
+    fn update_levels(&mut self, viewport: &Viewport, target_zoom: u8) -> Result<()> {
+        // Remove old levels that are no longer needed
+        let levels_to_remove: Vec<u8> = self.levels.keys()
+            .filter(|&&z| (z as i16 - target_zoom as i16).abs() > 2)
+            .copied()
+            .collect();
+            
+        for zoom in levels_to_remove {
+            self.levels.remove(&zoom);
+        }
 
-        // Drain any completed downloads
-        {
-            use std::sync::mpsc::TryRecvError;
-            let rx_lock = self.tile_rx.lock().unwrap();
-            loop {
-                match rx_lock.try_recv() {
-                    Ok((coord, data)) => {
-                        log::info!("Tile {:?} downloaded ({} bytes)", coord, data.len());
-                        log::info!("tile ready {:?} ({} bytes)", coord, data.len());
-                        self.visible_tiles.insert(coord, Arc::new(data));
-                        self.loading_tiles.remove(&coord);
+        // Ensure current level exists
+        if !self.levels.contains_key(&target_zoom) {
+            self.levels.insert(target_zoom, TileLevel::new(target_zoom));
+        }
+
+        // Update zoom transforms for smooth animations
+        self.update_zoom_transforms(viewport);
+
+        Ok(())
+    }
+
+    /// Update zoom transforms (similar to Leaflet's _setZoomTransforms)
+    fn update_zoom_transforms(&mut self, viewport: &Viewport) {
+        let current_zoom = viewport.zoom;
+        
+        for (zoom, level) in &mut self.levels {
+            let scale = 2_f64.powf(current_zoom - *zoom as f64);
+            level.scale = scale;
+            
+            // Calculate translation to keep map centered
+            // This enables smooth zoom without re-rendering
+            level.translation = Point::new(0.0, 0.0); // Simplified for now
+            level.active = (*zoom as f64 - current_zoom).abs() < 2.0;
+        }
+    }
+
+    /// Process completed tile loading results
+    fn process_tile_results(&mut self) -> Result<()> {
+        let results = self.tile_loader.try_recv_results();
+        
+        for result in results {
+            match result.data {
+                Ok(data) => {
+                    let data_arc = Arc::new(data);
+                    // Cache the tile
+                    self.tile_cache.put(result.coord, data_arc.clone());
+                    
+                    // Update tile state
+                    if let Some(level) = self.levels.get_mut(&result.coord.z) {
+                        if let Some(tile) = level.tiles.get_mut(&result.coord) {
+                            tile.mark_loaded(data_arc);
+                        }
                     }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => break,
+                }
+                Err(e) => {
+                    log::warn!("Failed to load tile {:?}: {}", result.coord, e);
+                    if let Some(level) = self.levels.get_mut(&result.coord.z) {
+                        if let Some(tile) = level.tiles.get_mut(&result.coord) {
+                            tile.mark_error(e.to_string());
+                        }
+                    }
                 }
             }
         }
 
-        // Load at most N tiles per frame to avoid long blocking stalls
-        const MAX_LOAD_PER_CALL: usize = 4;
-        let mut loaded_this_call = 0;
-
-        // Load any missing tiles (bounded)
-        for coord in &visible_coords {
-            if loaded_this_call >= MAX_LOAD_PER_CALL {
-                break; // defer remaining tiles to next frame
-            }
-
-            if !self.visible_tiles.contains_key(coord) && !self.error_tiles.contains_key(coord) {
-                log::debug!("Loading tile {:?}", coord);
-                self.load_tile(*coord)?;
-                loaded_this_call += 1;
-            }
-        }
-
-        // Defer pruning of obsolete tiles: keep them around while they can
-        // still be useful for smooth zooming. Only purge when they are two
-        // or more zoom levels away from the current integer zoom.
-        {
-            let current_z = viewport.zoom.floor() as i32;
-            let mut to_remove = Vec::new();
-            for coord in self.visible_tiles.keys() {
-                let dz = (coord.z as i32 - current_z).abs();
-                if dz >= 2 {
-                    to_remove.push(*coord);
-                }
-            }
-
-            for coord in to_remove {
-                self.visible_tiles.remove(&coord);
-                self.loading_tiles.remove(&coord);
-            }
+        // Check if loading is complete
+        if self.loading && self.all_tiles_loaded() {
+            self.loading = false;
+            log::debug!("Tile loading completed");
         }
 
         Ok(())
+    }
+
+    /// Check if all current tiles are loaded
+    fn all_tiles_loaded(&self) -> bool {
+        for level in self.levels.values() {
+            for tile in level.tiles.values() {
+                if tile.current && tile.loading {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Update tile opacity for fade animations (similar to Leaflet's _updateOpacity)
+    fn update_tile_opacity(&mut self) {
+        let now = std::time::Instant::now();
+        let fade_duration = std::time::Duration::from_millis(200);
+
+        for level in self.levels.values_mut() {
+            for tile in level.tiles.values_mut() {
+                if let Some(loaded_time) = tile.loaded_time {
+                    let elapsed = now.duration_since(loaded_time);
+                    let fade_progress = (elapsed.as_millis() as f32 / fade_duration.as_millis() as f32).clamp(0.0, 1.0);
+                    tile.opacity = fade_progress;
+                } else if tile.loading {
+                    tile.opacity = 0.0;
+                }
+            }
+        }
+    }
+
+    /// Prune tiles that are no longer needed (similar to Leaflet's _pruneTiles)
+    fn prune_tiles(&mut self) {
+        for level in self.levels.values_mut() {
+            // Mark tiles for retention
+            for tile in level.tiles.values_mut() {
+                tile.retain = tile.current;
+            }
+
+            // Retain parent/child tiles for smooth transitions
+            let tiles_to_check: Vec<_> = level.tiles.keys().copied().collect();
+            for coord in tiles_to_check {
+                if let Some(tile) = level.tiles.get(&coord) {
+                    if tile.current && tile.is_loaded() {
+                        // Could retain parent/child tiles here for smoother transitions
+                        // Similar to Leaflet's _retainParent and _retainChildren
+                    }
+                }
+            }
+
+            // Remove tiles that should not be retained
+            level.tiles.retain(|_, tile| tile.retain);
+        }
     }
 
     /// Get the tile source
@@ -261,14 +566,14 @@ impl TileLayer {
         self.options = options;
 
         // Clear cache when options change
-        self.visible_tiles.clear();
-        self.loading_tiles.clear();
-        self.error_tiles.clear();
+        self.levels.clear();
+        self.tile_zoom = None;
+        self.loading = false;
     }
 
-    /// Returns true if there are any tiles currently being downloaded.
+    /// Returns true if there are any tiles currently being downloaded or processed.
     pub fn is_loading(&self) -> bool {
-        !self.loading_tiles.is_empty()
+        self.loading || self.tile_loader.has_pending_results()
     }
 }
 
@@ -314,29 +619,30 @@ impl LayerTrait for TileLayer {
         self.options.bounds.clone()
     }
 
-    async fn render(&self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    fn render(&self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
         if !self.visible() {
             return Ok(());
         }
 
-        log::debug!("rendering tile layer: {} tiles ready", self.visible_tiles.len());
+        #[cfg(feature = "debug")]
+        log::debug!("rendering tile layer: {} tiles ready", self.levels.values().map(|level| level.tiles.len()).sum::<usize>());
 
         // Get visible tile coordinates for the *target* zoom level
         let visible_coords = self.get_visible_tiles(viewport);
 
         // Helper to locate the best (highest-resolution available) tile for a coordinate.
-        let find_best_tile = |coord: TileCoord, store: &HashMap<TileCoord, Arc<Vec<u8>>>| -> Option<(TileCoord, Arc<Vec<u8>>)> {
+        let find_best_tile = |coord: TileCoord, store: &HashMap<TileCoord, TileState>| -> Option<(TileCoord, TileState)> {
             // Try exact match first
-            if let Some(data) = store.get(&coord) {
-                return Some((coord, data.clone()));
+            if let Some(tile) = store.get(&coord) {
+                return Some((coord, tile.clone()));
             }
 
             // Walk up the pyramid until we find a parent tile that we already have.
             let mut current = coord;
             while current.z > 0 {
                 current = TileCoord { x: current.x / 2, y: current.y / 2, z: current.z - 1 };
-                if let Some(data) = store.get(&current) {
-                    return Some((current, data.clone()));
+                if let Some(tile) = store.get(&current) {
+                    return Some((current, tile.clone()));
                 }
             }
             None
@@ -344,22 +650,41 @@ impl LayerTrait for TileLayer {
 
         // Render each visible area, falling back to lower-zoom tiles when needed.
         for coord in visible_coords {
-            if let Some((tile_coord, tile_data)) = find_best_tile(coord, &self.visible_tiles) {
+            // Find the best tile across levels
+            let mut best_tile = None;
+            if let Some(level) = self.levels.get(&coord.z) {
+                if let Some((tile_coord, tile_state)) = find_best_tile(coord, &level.tiles) {
+                    if tile_state.is_loaded() {
+                        best_tile = Some((tile_coord, tile_state));
+                    }
+                }
+            }
+
+            if let Some((tile_coord, tile_state)) = best_tile {
                 // Use the existing helper that returns accurate geographic bounds for the tile.
                 // This avoids duplicating the inverse Web-Mercator math and eliminates the previous
                 // off-by-half-height bug that caused tiles to render as thin horizontal strips.
-                let tile_bounds = tile_coord.bounds();
+                // --- Pixel placement through direct world-pixel math (closer to Leaflet) ---
+                let world_scale = 256.0 * viewport.scale();
 
-                let mut screen_min = viewport.lat_lng_to_pixel(&tile_bounds.south_west);
-                let mut screen_max = viewport.lat_lng_to_pixel(&tile_bounds.north_east);
+                // Center of the viewport in world-pixel space at the tile zoom.
+                let center_world_x = (viewport.center.lng + 180.0) / 360.0 * world_scale;
+                let center_lat_rad = viewport.center.lat.to_radians();
+                let center_world_y = (1.0 - (center_lat_rad.tan() + 1.0 / center_lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * world_scale;
 
-                if screen_min.x > screen_max.x {
-                    std::mem::swap(&mut screen_min.x, &mut screen_max.x);
-                }
-                if screen_min.y > screen_max.y {
-                    std::mem::swap(&mut screen_min.y, &mut screen_max.y);
-                }
+                // Tile's top-left corner in world-pixel space.
+                let tile_px_x = tile_coord.x as f64 * 256.0;
+                let tile_px_y = tile_coord.y as f64 * 256.0;
 
+                // Convert to screen-pixel coordinates by offsetting from the viewport center.
+                let screen_min = crate::core::geo::Point::new(
+                    (tile_px_x - center_world_x) + viewport.size.x / 2.0,
+                    (tile_px_y - center_world_y) + viewport.size.y / 2.0,
+                );
+
+                let screen_max = crate::core::geo::Point::new(screen_min.x + 256.0, screen_min.y + 256.0);
+                
+                #[cfg(feature = "debug")]
                 log::debug!(
                     "draw tile {:?} (fallback from {:?}) on screen bounds=({:.1},{:.1})-({:.1},{:.1}) (zoom {})",
                     coord,
@@ -371,7 +696,10 @@ impl LayerTrait for TileLayer {
                     viewport.zoom
                 );
 
-                context.render_tile(tile_data.as_slice(), (screen_min, screen_max), self.opacity())?;
+                if let Some(tile_data) = &tile_state.data {
+                    let opacity = self.opacity() * tile_state.opacity;
+                    context.render_tile(tile_data.as_slice(), (screen_min, screen_max), opacity)?;
+                }
             }
         }
 
@@ -383,8 +711,10 @@ impl LayerTrait for TileLayer {
 
     fn update(&mut self, _delta_time: f64) -> Result<()> {
         // Clean up any error tiles after some time
-        if self.error_tiles.len() > 100 {
-            self.error_tiles.clear();
+        if self.levels.values().flat_map(|level| level.tiles.values()).filter(|tile| tile.error.is_some()).count() > 100 {
+            for level in self.levels.values_mut() {
+                level.tiles.retain(|_, tile| tile.error.is_none());
+            }
         }
 
         Ok(())

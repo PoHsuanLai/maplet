@@ -1,6 +1,10 @@
 use crate::{
-    core::viewport::Viewport, layers::base::LayerTrait, rendering::context::RenderContext, Result,
+    core::viewport::Viewport, layers::base::LayerTrait, Result,
 };
+
+#[cfg(feature = "render")]
+use crate::rendering::context::RenderContext;
+
 use std::collections::HashMap;
 
 /// Manages layers for the map, handling ordering and rendering
@@ -106,7 +110,7 @@ impl LayerManager {
             if let Some(layer) = self.layers.get(layer_id) {
                 // Only render visible layers that intersect with viewport
                 if layer.visible() && layer.intersects_bounds(&viewport_bounds) {
-                    layer.render(context, viewport).await?;
+                    layer.render(context, viewport)?;
                 }
             }
         }

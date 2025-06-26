@@ -1,17 +1,22 @@
 use crate::{
     core::{
         bounds::Bounds,
-        geo::Point,
+        geo::{LatLng, Point},
         map::Map,
         viewport::Viewport,
     },
     input::events::InputEvent,
+    layers::vector::VectorLayer,
     plugins::base::PluginTrait,
-    rendering::context::RenderContext,
     Result,
 };
-use async_trait::async_trait;
+
+#[cfg(feature = "egui")]
 use egui::Color32;
+
+#[cfg(feature = "render")]
+use crate::rendering::context::RenderContext;
+
 use std::collections::HashMap;
 
 /// Drawing tool types
@@ -594,7 +599,6 @@ impl DrawPlugin {
     }
 }
 
-#[async_trait]
 impl PluginTrait for DrawPlugin {
     fn name(&self) -> &str {
         "Draw"
@@ -618,7 +622,7 @@ impl PluginTrait for DrawPlugin {
         Ok(())
     }
 
-    async fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
         if !self.active || !self.config.enabled {
             return Ok(());
         }

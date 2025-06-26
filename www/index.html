@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Maplet - WASM Demo</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: #2563eb;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .content {
+            padding: 20px;
+        }
+        
+        #map-container {
+            width: 100%;
+            height: 600px;
+            border: 2px solid #e5e7eb;
+            border-radius: 6px;
+            background: #f9fafb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            color: #6b7280;
+        }
+        
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.2s;
+        }
+        
+        button:hover {
+            background: #1d4ed8;
+        }
+        
+        button:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f3f4f6;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        
+        .error {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+        }
+        
+        .success {
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            color: #16a34a;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🗺️ Maplet WASM Demo</h1>
+            <p>Interactive mapping library running in your browser</p>
+        </div>
+        
+        <div class="content">
+            <div id="map-container">
+                Map will be rendered here...
+            </div>
+            
+            <div class="controls">
+                <button id="init-map">Initialize Map</button>
+                <button id="add-markers" disabled>Add Markers</button>
+                <button id="toggle-layers" disabled>Toggle Layers</button>
+                <button id="fit-bounds" disabled>Fit to Bounds</button>
+                <button id="reset-view" disabled>Reset View</button>
+            </div>
+            
+            <div id="status" class="status">
+                Ready to initialize maplet...
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { Map, LatLng, Point, TileLayer } from './maplet.js';
+
+        let map = null;
+        let wasmModule = null;
+
+        const statusEl = document.getElementById('status');
+        const mapContainer = document.getElementById('map-container');
+
+        function updateStatus(message, type = 'info') {
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        function enableControls() {
+            document.querySelectorAll('button:not(#init-map)').forEach(btn => {
+                btn.disabled = false;
+            });
+        }
+
+        async function initializeWasm() {
+            try {
+                updateStatus('Loading WASM module...', 'info');
+                wasmModule = await init();
+                updateStatus('WASM module loaded successfully!', 'success');
+                return true;
+            } catch (err) {
+                updateStatus(`Failed to load WASM: ${err.message}`, 'error');
+                console.error('WASM initialization error:', err);
+                return false;
+            }
+        }
+
+        async function initializeMap() {
+            if (!wasmModule) {
+                const success = await initializeWasm();
+                if (!success) return;
+            }
+
+            try {
+                updateStatus('Initializing map...', 'info');
+                
+                // Create map centered on San Francisco
+                const center = new LatLng(37.7749, -122.4194);
+                const size = new Point(mapContainer.clientWidth, mapContainer.clientHeight);
+                map = new Map(center, 12.0, size);
+                
+                // Add OpenStreetMap tiles
+                const osmLayer = TileLayer.openstreetmap("osm", "OpenStreetMap");
+                map.add_layer(osmLayer);
+                
+                mapContainer.innerHTML = '<canvas id="map-canvas" width="800" height="600"></canvas>';
+                updateStatus('Map initialized successfully!', 'success');
+                enableControls();
+                
+            } catch (err) {
+                updateStatus(`Failed to initialize map: ${err.message}`, 'error');
+                console.error('Map initialization error:', err);
+            }
+        }
+
+        function addMarkers() {
+            try {
+                updateStatus('Adding markers...', 'info');
+                // Add marker functionality here when implemented
+                updateStatus('Markers added!', 'success');
+            } catch (err) {
+                updateStatus(`Failed to add markers: ${err.message}`, 'error');
+            }
+        }
+
+        function toggleLayers() {
+            try {
+                updateStatus('Toggling layers...', 'info');
+                // Add layer toggle functionality here
+                updateStatus('Layers toggled!', 'success');
+            } catch (err) {
+                updateStatus(`Failed to toggle layers: ${err.message}`, 'error');
+            }
+        }
+
+        function fitBounds() {
+            try {
+                updateStatus('Fitting to bounds...', 'info');
+                // Add bounds fitting functionality here
+                updateStatus('View fitted to bounds!', 'success');
+            } catch (err) {
+                updateStatus(`Failed to fit bounds: ${err.message}`, 'error');
+            }
+        }
+
+        function resetView() {
+            try {
+                updateStatus('Resetting view...', 'info');
+                if (map) {
+                    const center = new LatLng(37.7749, -122.4194);
+                    map.set_view(center, 12.0);
+                    updateStatus('View reset!', 'success');
+                }
+            } catch (err) {
+                updateStatus(`Failed to reset view: ${err.message}`, 'error');
+            }
+        }
+
+        // Event listeners
+        document.getElementById('init-map').addEventListener('click', initializeMap);
+        document.getElementById('add-markers').addEventListener('click', addMarkers);
+        document.getElementById('toggle-layers').addEventListener('click', toggleLayers);
+        document.getElementById('fit-bounds').addEventListener('click', fitBounds);
+        document.getElementById('reset-view').addEventListener('click', resetView);
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            if (map) {
+                const canvas = document.getElementById('map-canvas');
+                if (canvas) {
+                    canvas.width = mapContainer.clientWidth;
+                    canvas.height = mapContainer.clientHeight;
+                    
+                    const size = new Point(canvas.width, canvas.height);
+                    map.set_size(size);
+                }
+            }
+        });
+
+        // Initialize on page load
+        updateStatus('Page loaded. Click "Initialize Map" to start.', 'info');
+    </script>
+</body>
+</html> 

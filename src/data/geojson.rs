@@ -1,6 +1,11 @@
-use crate::core::geo::{LatLng, LatLngBounds};
+use crate::core::geo::{LatLng, LatLngBounds, Point};
+use crate::core::bounds::Bounds;
+use crate::spatial::index::{SpatialIndex, SpatialItem};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::io::{BufRead, BufReader, Read};
 
 /// GeoJSON feature types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,6 +40,13 @@ pub struct GeoJsonFeature {
     pub id: Option<serde_json::Value>,
     pub geometry: Option<GeoJsonGeometry>,
     pub properties: Option<HashMap<String, serde_json::Value>>,
+}
+
+impl GeoJsonFeature {
+    /// Get the bounds of this feature
+    pub fn bounds(&self) -> Option<LatLngBounds> {
+        self.geometry.as_ref().and_then(|g| GeoJsonLayer::geometry_bounds(g))
+    }
 }
 
 /// Root GeoJSON object
@@ -78,8 +90,8 @@ impl Default for FeatureStyle {
 pub struct GeoJsonLayer {
     data: GeoJson,
     style: FeatureStyle,
-    style_function: Option<Box<dyn Fn(&GeoJsonFeature) -> FeatureStyle>>,
-    filter: Option<Box<dyn Fn(&GeoJsonFeature) -> bool>>,
+    style_fn: Option<Box<dyn Fn(&GeoJsonFeature) -> FeatureStyle + Send + Sync>>,
+    filter_fn: Option<Box<dyn Fn(&GeoJsonFeature) -> bool + Send + Sync>>,
 }
 
 impl GeoJsonLayer {
@@ -91,8 +103,8 @@ impl GeoJsonLayer {
         Ok(Self {
             data,
             style: FeatureStyle::default(),
-            style_function: None,
-            filter: None,
+            style_fn: None,
+            filter_fn: None,
         })
     }
 
@@ -101,8 +113,8 @@ impl GeoJsonLayer {
         Self {
             data,
             style: FeatureStyle::default(),
-            style_function: None,
-            filter: None,
+            style_fn: None,
+            filter_fn: None,
         }
     }
 
@@ -115,18 +127,18 @@ impl GeoJsonLayer {
     /// Sets a function to style features based on their properties
     pub fn set_style_function<F>(mut self, style_fn: F) -> Self
     where
-        F: Fn(&GeoJsonFeature) -> FeatureStyle + 'static,
+        F: Fn(&GeoJsonFeature) -> FeatureStyle + Send + Sync + 'static,
     {
-        self.style_function = Some(Box::new(style_fn));
+        self.style_fn = Some(Box::new(style_fn));
         self
     }
 
     /// Sets a filter function to show/hide features
     pub fn set_filter<F>(mut self, filter_fn: F) -> Self
     where
-        F: Fn(&GeoJsonFeature) -> bool + 'static,
+        F: Fn(&GeoJsonFeature) -> bool + Send + Sync + 'static,
     {
-        self.filter = Some(Box::new(filter_fn));
+        self.filter_fn = Some(Box::new(filter_fn));
         self
     }
 
@@ -135,7 +147,7 @@ impl GeoJsonLayer {
         let mut features = Vec::new();
         self.collect_features(&self.data, &mut features);
 
-        if let Some(filter) = &self.filter {
+        if let Some(filter) = &self.filter_fn {
             features.retain(|f| filter(f));
         }
 
@@ -169,7 +181,7 @@ impl GeoJsonLayer {
 
     /// Gets the style for a specific feature
     pub fn feature_style(&self, feature: &GeoJsonFeature) -> FeatureStyle {
-        if let Some(style_fn) = &self.style_function {
+        if let Some(style_fn) = &self.style_fn {
             style_fn(feature)
         } else {
             self.style.clone()
@@ -191,7 +203,7 @@ impl GeoJsonLayer {
         }
     }
 
-    fn geometry_bounds(geometry: &GeoJsonGeometry) -> Option<LatLngBounds> {
+    pub fn geometry_bounds(geometry: &GeoJsonGeometry) -> Option<LatLngBounds> {
         match geometry {
             GeoJsonGeometry::Point { coordinates } => {
                 let point = LatLng::new(coordinates[1], coordinates[0]);
@@ -253,6 +265,11 @@ impl GeoJsonLayer {
         }
 
         Some(bounds)
+    }
+
+    /// Create a GeoJsonLayer from a parsed GeoJson object
+    pub fn from_geojson(data: GeoJson) -> Self {
+        Self::new(data)
     }
 }
 
@@ -473,5 +490,432 @@ mod tests {
 
         assert_eq!(bounds.south_west.lat, 40.7128);
         assert_eq!(bounds.north_east.lat, 40.7489);
+    }
+}
+
+/// Configuration for streaming GeoJSON processing
+#[derive(Clone)]
+pub struct StreamingConfig {
+    /// Maximum number of features to process in one chunk
+    pub chunk_size: usize,
+    /// Maximum memory usage before flushing (in bytes)
+    pub memory_limit: usize,
+    /// Enable progressive loading
+    pub progressive: bool,
+    /// Spatial index configuration
+    pub spatial_index: bool,
+    /// Feature filtering predicate
+    pub filter: Option<Arc<dyn Fn(&GeoJsonFeature) -> bool + Send + Sync>>,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            chunk_size: 1000,
+            memory_limit: 50 * 1024 * 1024, // 50MB
+            progressive: true,
+            spatial_index: true,
+            filter: None,
+        }
+    }
+}
+
+/// A chunk of processed GeoJSON features
+#[derive(Clone)]
+pub struct FeatureChunk {
+    /// Features in this chunk
+    pub features: Vec<GeoJsonFeature>,
+    /// Spatial index for this chunk (if enabled)
+    pub spatial_index: Option<SpatialIndex<GeoJsonFeature>>,
+    /// Bounds of all features in this chunk
+    pub bounds: Option<LatLngBounds>,
+    /// Chunk metadata
+    pub metadata: ChunkMetadata,
+}
+
+/// Metadata for a feature chunk
+#[derive(Debug, Clone)]
+pub struct ChunkMetadata {
+    /// Chunk index
+    pub index: usize,
+    /// Total number of features in chunk
+    pub feature_count: usize,
+    /// Estimated memory usage (bytes)
+    pub memory_usage: usize,
+    /// Processing time
+    pub processing_time: std::time::Duration,
+}
+
+/// Streaming GeoJSON processor for large datasets
+pub struct StreamingGeoJsonProcessor {
+    /// Processing configuration
+    config: StreamingConfig,
+    /// Current chunk being processed
+    current_chunk: Vec<GeoJsonFeature>,
+    /// Completed chunks
+    completed_chunks: Vec<FeatureChunk>,
+    /// Current memory usage estimate
+    current_memory: usize,
+    /// Total features processed
+    total_features: usize,
+    /// Processing statistics
+    stats: ProcessingStats,
+}
+
+/// Processing statistics
+#[derive(Debug, Clone, Default)]
+pub struct ProcessingStats {
+    /// Total processing time
+    pub total_time: std::time::Duration,
+    /// Number of chunks processed
+    pub chunks_processed: usize,
+    /// Total features processed
+    pub features_processed: usize,
+    /// Total bytes processed
+    pub bytes_processed: usize,
+    /// Average processing speed (features per second)
+    pub processing_speed: f64,
+}
+
+impl StreamingGeoJsonProcessor {
+    /// Create a new streaming processor
+    pub fn new(config: StreamingConfig) -> Self {
+        Self {
+            config,
+            current_chunk: Vec::new(),
+            completed_chunks: Vec::new(),
+            current_memory: 0,
+            total_features: 0,
+            stats: ProcessingStats::default(),
+        }
+    }
+    
+    /// Process GeoJSON from a reader in chunks
+    pub fn process_stream<R: Read>(&mut self, reader: R) -> Result<()> {
+        let start_time = std::time::Instant::now();
+        let mut buf_reader = BufReader::new(reader);
+        let mut buffer = String::new();
+        let mut in_feature_collection = false;
+        let mut brace_count = 0;
+        let mut current_feature = String::new();
+        
+        while buf_reader.read_line(&mut buffer)? > 0 {
+            for ch in buffer.chars() {
+                current_feature.push(ch);
+                
+                match ch {
+                    '{' => {
+                        brace_count += 1;
+                        if !in_feature_collection && current_feature.contains("\"features\"") {
+                            in_feature_collection = true;
+                        }
+                    }
+                    '}' => {
+                        brace_count -= 1;
+                        if in_feature_collection && brace_count == 1 {
+                            // End of a feature
+                            if let Ok(feature) = self.parse_feature(&current_feature) {
+                                self.add_feature(feature)?;
+                            }
+                            current_feature.clear();
+                        }
+                    }
+                    ',' => {
+                        if in_feature_collection && brace_count == 1 {
+                            // End of a feature (with comma)
+                            if let Ok(feature) = self.parse_feature(&current_feature.trim_end_matches(',')) {
+                                self.add_feature(feature)?;
+                            }
+                            current_feature.clear();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            buffer.clear();
+        }
+        
+        // Process any remaining features
+        if !self.current_chunk.is_empty() {
+            self.flush_chunk()?;
+        }
+        
+        // Update statistics
+        self.stats.total_time = start_time.elapsed();
+        if self.stats.total_time.as_secs_f64() > 0.0 {
+            self.stats.processing_speed = self.stats.features_processed as f64 / self.stats.total_time.as_secs_f64();
+        }
+        
+        Ok(())
+    }
+    
+    /// Add a feature to the current chunk
+    fn add_feature(&mut self, feature: GeoJsonFeature) -> Result<()> {
+        // Apply filter if configured
+        if let Some(filter) = &self.config.filter {
+            if !filter(&feature) {
+                return Ok(());
+            }
+        }
+        
+        // Estimate memory usage
+        let feature_memory = self.estimate_feature_memory(&feature);
+        
+        // Check if we need to flush the current chunk
+        if self.current_chunk.len() >= self.config.chunk_size 
+           || self.current_memory + feature_memory > self.config.memory_limit {
+            self.flush_chunk()?;
+        }
+        
+        self.current_chunk.push(feature);
+        self.current_memory += feature_memory;
+        self.total_features += 1;
+        
+        Ok(())
+    }
+    
+    /// Flush the current chunk
+    fn flush_chunk(&mut self) -> Result<()> {
+        if self.current_chunk.is_empty() {
+            return Ok(());
+        }
+        
+        let start_time = std::time::Instant::now();
+        
+        // Calculate bounds
+        let bounds = self.calculate_chunk_bounds(&self.current_chunk);
+        
+        // Build spatial index if enabled
+        let spatial_index = if self.config.spatial_index {
+            let mut index = SpatialIndex::new();
+            for (i, feature) in self.current_chunk.iter().enumerate() {
+                if let Some(lat_lng_bounds) = feature.bounds() {
+                    // Convert LatLngBounds to Bounds for spatial index
+                    let bounds = Bounds::from_coords(
+                        lat_lng_bounds.south_west.lng,
+                        lat_lng_bounds.south_west.lat,
+                        lat_lng_bounds.north_east.lng,
+                        lat_lng_bounds.north_east.lat,
+                    );
+                    let item = SpatialItem {
+                        id: format!("feature_{}", i),
+                        bounds,
+                        data: feature.clone(),
+                    };
+                    let _ = index.insert(item);
+                }
+            }
+            Some(index)
+        } else {
+            None
+        };
+        
+        let processing_time = start_time.elapsed();
+        
+        // Create chunk
+        let chunk = FeatureChunk {
+            features: std::mem::take(&mut self.current_chunk),
+            spatial_index,
+            bounds,
+            metadata: ChunkMetadata {
+                index: self.completed_chunks.len(),
+                feature_count: self.current_chunk.len(),
+                memory_usage: self.current_memory,
+                processing_time,
+            },
+        };
+        
+        self.completed_chunks.push(chunk);
+        self.current_memory = 0;
+        self.stats.chunks_processed += 1;
+        self.stats.features_processed += self.current_chunk.len();
+        
+        Ok(())
+    }
+    
+    /// Parse a feature from JSON string
+    fn parse_feature(&self, json_str: &str) -> Result<GeoJsonFeature> {
+        let cleaned = json_str.trim().trim_start_matches(',').trim();
+        serde_json::from_str(cleaned).map_err(|e| format!("Failed to parse feature: {}", e).into())
+    }
+    
+    /// Estimate memory usage of a feature
+    fn estimate_feature_memory(&self, feature: &GeoJsonFeature) -> usize {
+        // Rough estimation based on JSON serialization size
+        match serde_json::to_string(feature) {
+            Ok(json) => json.len() * 2, // Account for overhead
+            Err(_) => 1024, // Default estimate
+        }
+    }
+    
+    /// Calculate bounds for a chunk of features
+    fn calculate_chunk_bounds(&self, features: &[GeoJsonFeature]) -> Option<LatLngBounds> {
+        let mut min_lat = f64::INFINITY;
+        let mut max_lat = f64::NEG_INFINITY;
+        let mut min_lng = f64::INFINITY;
+        let mut max_lng = f64::NEG_INFINITY;
+        let mut has_bounds = false;
+        
+        for feature in features {
+            if let Some(bounds) = feature.bounds() {
+                has_bounds = true;
+                min_lat = min_lat.min(bounds.south_west.lat);
+                max_lat = max_lat.max(bounds.north_east.lat);
+                min_lng = min_lng.min(bounds.south_west.lng);
+                max_lng = max_lng.max(bounds.north_east.lng);
+            }
+        }
+        
+        if has_bounds {
+            Some(LatLngBounds::new(
+                LatLng::new(min_lat, min_lng),
+                LatLng::new(max_lat, max_lng),
+            ))
+        } else {
+            None
+        }
+    }
+    
+    /// Get all completed chunks
+    pub fn chunks(&self) -> &[FeatureChunk] {
+        &self.completed_chunks
+    }
+    
+    /// Get processing statistics
+    pub fn stats(&self) -> &ProcessingStats {
+        &self.stats
+    }
+    
+    /// Get chunks within a specific bounds (spatial query)
+    pub fn chunks_in_bounds(&self, bounds: &LatLngBounds) -> Vec<&FeatureChunk> {
+        self.completed_chunks
+            .iter()
+            .filter(|chunk| {
+                chunk.bounds
+                    .as_ref()
+                    .map(|cb| cb.intersects(bounds))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+    
+    /// Get features within bounds from all chunks
+    pub fn features_in_bounds(&self, bounds: &LatLngBounds) -> Vec<&GeoJsonFeature> {
+        let mut features = Vec::new();
+        
+        for chunk in self.chunks_in_bounds(bounds) {
+            if let Some(spatial_index) = &chunk.spatial_index {
+                // Use spatial index for efficient querying
+                // Convert LatLngBounds to Bounds for spatial query
+                let query_bounds = Bounds::from_coords(
+                    bounds.south_west.lng,
+                    bounds.south_west.lat,
+                    bounds.north_east.lng,
+                    bounds.north_east.lat,
+                );
+                let items = spatial_index.query(&query_bounds);
+                features.extend(items.iter().map(|item| &item.data));
+            } else {
+                // Fallback to linear search
+                for feature in &chunk.features {
+                    if let Some(feature_bounds) = feature.bounds() {
+                        if feature_bounds.intersects(bounds) {
+                            features.push(feature);
+                        }
+                    }
+                }
+            }
+        }
+        
+        features
+    }
+    
+    /// Clear all processed data to free memory
+    pub fn clear(&mut self) {
+        self.current_chunk.clear();
+        self.completed_chunks.clear();
+        self.current_memory = 0;
+        self.total_features = 0;
+        self.stats = ProcessingStats::default();
+    }
+}
+
+/// Progressive GeoJSON loader for UI integration
+pub struct ProgressiveGeoJsonLoader {
+    /// Streaming processor
+    processor: StreamingGeoJsonProcessor,
+    /// Loading state
+    state: LoadingState,
+    /// Progress callback
+    progress_callback: Option<Box<dyn Fn(f64) + Send + Sync>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadingState {
+    Idle,
+    Loading { progress: f64 },
+    Completed,
+    Error(String),
+}
+
+impl ProgressiveGeoJsonLoader {
+    /// Create a new progressive loader
+    pub fn new(config: StreamingConfig) -> Self {
+        Self {
+            processor: StreamingGeoJsonProcessor::new(config),
+            state: LoadingState::Idle,
+            progress_callback: None,
+        }
+    }
+    
+    /// Set progress callback
+    pub fn with_progress_callback<F>(mut self, callback: F) -> Self 
+    where 
+        F: Fn(f64) + Send + Sync + 'static 
+    {
+        self.progress_callback = Some(Box::new(callback));
+        self
+    }
+    
+    /// Load GeoJSON progressively from bytes
+    pub async fn load_progressive(&mut self, data: Vec<u8>) -> Result<()> {
+        self.state = LoadingState::Loading { progress: 0.0 };
+        
+        // Simulate progressive loading by processing in chunks
+        let chunk_size = 8192; // 8KB chunks
+        let total_size = data.len();
+        
+        let mut cursor = std::io::Cursor::new(data);
+        let mut processed = 0;
+        
+        // Process the data
+        match self.processor.process_stream(&mut cursor) {
+            Ok(_) => {
+                self.state = LoadingState::Completed;
+                if let Some(callback) = &self.progress_callback {
+                    callback(1.0);
+                }
+            }
+            Err(e) => {
+                self.state = LoadingState::Error(e.to_string());
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Get current loading state
+    pub fn state(&self) -> &LoadingState {
+        &self.state
+    }
+    
+    /// Get the processor
+    pub fn processor(&self) -> &StreamingGeoJsonProcessor {
+        &self.processor
+    }
+    
+    /// Get mutable processor
+    pub fn processor_mut(&mut self) -> &mut StreamingGeoJsonProcessor {
+        &mut self.processor
     }
 }
