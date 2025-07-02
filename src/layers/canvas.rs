@@ -1,5 +1,7 @@
 use crate::{
+    core::viewport::Viewport,
     layers::base::{LayerProperties, LayerTrait, LayerType},
+    rendering::context::RenderContext,
     Result,
 };
 
@@ -8,62 +10,21 @@ pub struct CanvasLayer {
 }
 
 impl CanvasLayer {
-    pub fn new(id: String) -> Self {
-        let properties = LayerProperties::new(id, "Canvas Layer".to_string(), LayerType::Canvas);
+    pub fn new(id: String, name: String) -> Self {
+        let properties = LayerProperties::new(id, name, LayerType::Canvas);
         Self { properties }
     }
 }
 
 impl LayerTrait for CanvasLayer {
-    fn id(&self) -> &str {
-        &self.properties.id
-    }
-    fn name(&self) -> &str {
-        &self.properties.name
-    }
-    fn layer_type(&self) -> LayerType {
-        LayerType::Canvas
-    }
-    fn z_index(&self) -> i32 {
-        self.properties.z_index
-    }
-    fn set_z_index(&mut self, z_index: i32) {
-        self.properties.z_index = z_index;
-    }
-    fn opacity(&self) -> f32 {
-        self.properties.opacity
-    }
-    fn set_opacity(&mut self, opacity: f32) {
-        self.properties.opacity = opacity.clamp(0.0, 1.0);
-    }
-    fn visible(&self) -> bool {
-        self.properties.visible
-    }
-    fn set_visible(&mut self, visible: bool) {
-        self.properties.visible = visible;
-    }
-    fn options(&self) -> serde_json::Value {
-        self.properties.options.clone()
-    }
-    fn set_options(&mut self, options: serde_json::Value) -> Result<()> {
-        self.properties.options = options;
-        Ok(())
-    }
+    crate::impl_layer_trait!(CanvasLayer, properties);
+    crate::impl_basic_options!(properties);
 
     fn render(
-        &self,
-        #[cfg(feature = "render")] _context: &mut crate::rendering::context::RenderContext,
-        #[cfg(not(feature = "render"))] _context: &mut (),
-        _viewport: &crate::core::viewport::Viewport,
+        &mut self,
+        _context: &mut RenderContext,
+        _viewport: &Viewport,
     ) -> Result<()> {
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }

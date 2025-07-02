@@ -47,6 +47,7 @@ pub fn spawn<F>(future: F) -> Box<dyn AsyncHandle>
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    println!("🚀 [DEBUG] runtime::spawn() - Spawning new async task");
     runtime().spawn_boxed(Box::pin(future))
 }
 
@@ -55,6 +56,7 @@ where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
+    println!("🚀 [DEBUG] runtime::spawn_with_result() - Spawning new async task with result");
     let boxed_future = Box::pin(async move {
         let result = future.await;
         Box::new(result) as Box<dyn std::any::Any + Send>
@@ -245,22 +247,24 @@ pub fn init_runtime(spawner: Box<dyn AsyncSpawner>) {
 
 /// Get the global runtime spawner
 pub fn runtime() -> &'static dyn AsyncSpawner {
-    RUNTIME.get_or_init(|| {
-        #[cfg(feature = "tokio-runtime")]
-        {
-            Box::new(spawners::tokio_impl::TokioSpawner)
-        }
+    RUNTIME
+        .get_or_init(|| {
+            #[cfg(feature = "tokio-runtime")]
+            {
+                Box::new(spawners::tokio_impl::TokioSpawner)
+            }
 
-        #[cfg(all(feature = "wasm", not(feature = "tokio-runtime")))]
-        {
-            Box::new(spawners::wasm::WasmSpawner)
-        }
+            #[cfg(all(feature = "wasm", not(feature = "tokio-runtime")))]
+            {
+                Box::new(spawners::wasm::WasmSpawner)
+            }
 
-        #[cfg(not(any(feature = "tokio-runtime", feature = "wasm")))]
-        {
-            panic!("No async runtime available. Enable 'tokio-runtime' or 'wasm' feature.");
-        }
-    }).as_ref()
+            #[cfg(not(any(feature = "tokio-runtime", feature = "wasm")))]
+            {
+                panic!("No async runtime available. Enable 'tokio-runtime' or 'wasm' feature.");
+            }
+        })
+        .as_ref()
 }
 
 /// Shutdown the runtime gracefully

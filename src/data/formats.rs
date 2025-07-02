@@ -533,35 +533,14 @@ impl DataProcessor {
             return None;
         }
 
-        let mut min_lat = f64::INFINITY;
-        let mut max_lat = f64::NEG_INFINITY;
-        let mut min_lng = f64::INFINITY;
-        let mut max_lng = f64::NEG_INFINITY;
-
+        let mut all_points = Vec::new();
         for feature in features {
             if let Some(geometry) = &feature.geometry {
-                let points = Self::extract_points_from_geometry(geometry);
-                for point in points {
-                    min_lat = min_lat.min(point.lat);
-                    max_lat = max_lat.max(point.lat);
-                    min_lng = min_lng.min(point.lng);
-                    max_lng = max_lng.max(point.lng);
-                }
+                all_points.extend(Self::extract_points_from_geometry(geometry));
             }
         }
 
-        if min_lat.is_infinite()
-            || max_lat.is_infinite()
-            || min_lng.is_infinite()
-            || max_lng.is_infinite()
-        {
-            None
-        } else {
-            Some(LatLngBounds::new(
-                LatLng::new(min_lat, min_lng),
-                LatLng::new(max_lat, max_lng),
-            ))
-        }
+        LatLngBounds::from_points(&all_points)
     }
 
     /// Extract all points from a geometry for bbox calculation

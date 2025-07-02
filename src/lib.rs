@@ -11,17 +11,46 @@
 //! - **Cross-Platform**: Works on desktop, web (WASM), and mobile
 //! - **Extensible**: Plugin system for custom layers and functionality
 //!
+//! ## Simple Usage (Recommended)
+//!
+//! ```rust
+//! // Just add a map - works immediately!
+//! ui.add(maplet::Map::new());
+//!
+//! // Or use helper functions
+//! ui.map(); // Default location (San Francisco)
+//! ui.map_at(51.5074, -0.1278); // London
+//! ui.map_at_zoom(40.7128, -74.0060, 10.0); // New York with zoom
+//!
+//! // Or customize with builder pattern
+//! ui.add(
+//!     maplet::Map::new()
+//!         .center(37.7749, -122.4194)
+//!         .zoom(12)
+//!         .size([800.0, 600.0])
+//!         .theme(maplet::MapTheme::Dark)
+//! );
+//!
+//! // Or use presets
+//! ui.add(maplet::Map::san_francisco());
+//! ui.add(maplet::Map::london());
+//! ui.add(maplet::Map::tokyo());
+//! ```
+//!
 //! ## Feature Flags
 //!
-//! - `render`: GPU rendering support (default)
-//! - `egui`: Integration with egui UI framework
-//! - `wasm`: WASM compatibility layer
-//! - `tokio-runtime`: Tokio async runtime integration
+//! - `egui`: Integration with egui UI framework (default)
+//! - `wasm`: WASM compatibility layer (default)
+//! - `tokio-runtime`: Tokio async runtime integration (default)
+//! - `animations`: Animation system (default)
+//! - `serde-support`: Serde serialization support (default)
+//! - `debug`: Additional debugging and logging (default)
 //! - `app`: Full application features (used by maplet-app)
-//! - `debug`: Additional debugging and logging
+//!
+//! GPU rendering is now always available for the best map experience.
 
 // Core modules (always available)
-pub mod animation;
+
 pub mod background;
 pub mod core;
 pub mod data;
@@ -29,18 +58,13 @@ pub mod input;
 pub mod layers;
 pub mod plugins;
 pub mod prelude;
+pub mod rendering;
 pub mod runtime;
 pub mod spatial;
-pub mod tiles;
 
 // Feature-gated modules
-#[cfg(feature = "render")]
-pub mod rendering;
-
 #[cfg(feature = "egui")]
 pub mod ui;
-
-pub use crate::core::constants;
 
 // Re-export public API
 pub use core::{
@@ -51,7 +75,7 @@ pub use core::{
         MapPerformanceProfile, TextureFilterMode, TileLoadingConfig,
     },
     geo::{LatLng, LatLngBounds, Point, TileCoord},
-    map::{Map, MapOptions},
+    map::{Map as CoreMap, MapOptions},
     viewport::Viewport,
 };
 
@@ -63,18 +87,22 @@ pub use layers::{
 pub use input::{events::InputEvent, handler::InputHandler};
 
 #[cfg(feature = "egui")]
-pub use ui::{controls::MapControls, popup::Popup, widget::MapWidget};
+pub use ui::{
+    controls::ControlManager, 
+    popup::Popup, 
+    widget::{AdvancedMapWidget, Map, MapCursor, MapTheme, MapWidgetConfig, MapWidgetExt},
+    UiMapExt,
+};
 
 pub use plugins::{
     base::PluginTrait, draw::DrawPlugin, heatmap::HeatmapPlugin, measure::MeasurePlugin,
 };
 
-#[cfg(feature = "render")]
 pub use rendering::{context::RenderContext, pipeline::RenderPipeline};
 
 pub use spatial::{clustering::Clustering, index::SpatialIndex};
 
-pub use animation::{transitions::Transition, tweening::Tween};
+pub use layers::animation::{AnimationManager, EasingType, Transform};
 
 pub use data::{formats::DataFormat, geojson::GeoJsonLayer};
 
@@ -95,7 +123,6 @@ pub enum MapError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    #[cfg(feature = "render")]
     #[error("Render error: {0}")]
     Render(String),
 

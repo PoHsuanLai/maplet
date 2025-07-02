@@ -1,15 +1,10 @@
 use crate::{
-    core::{
-        geo::Point,
-        map::Map,
-        viewport::Viewport,
-    },
+    core::{geo::Point, map::Map, viewport::Viewport},
     input::events::InputEvent,
     plugins::base::PluginTrait,
     Result,
 };
 
-#[cfg(feature = "render")]
 use crate::rendering::context::RenderContext;
 
 #[cfg(feature = "egui")]
@@ -481,7 +476,6 @@ impl MeasurePlugin {
     pub fn is_active(&self) -> bool {
         self.active
     }
-
 }
 
 impl PluginTrait for MeasurePlugin {

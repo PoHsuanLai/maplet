@@ -132,8 +132,8 @@ impl RenderContext {
             return Ok(());
         }
 
-        // Check for minimum reasonable tile size (100 bytes for a tiny image)
-        if tile_data.len() < 100 {
+        // Check for minimum reasonable tile size (allow small valid images)
+        if tile_data.len() < 20 {
             log::warn!(
                 "Suspiciously small tile data ({} bytes), skipping render",
                 tile_data.len()

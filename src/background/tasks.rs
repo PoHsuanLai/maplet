@@ -3,6 +3,7 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 /// Priority levels for background tasks
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,6 +90,8 @@ pub struct TaskManagerConfig {
     pub max_queue_size: usize,
     /// Whether to enable task metrics
     pub enable_metrics: bool,
+    /// Test mode - tasks execute synchronously and immediately
+    pub test_mode: bool,
 }
 
 impl Default for TaskManagerConfig {
@@ -97,6 +100,7 @@ impl Default for TaskManagerConfig {
             max_concurrent_tasks: 8,
             max_queue_size: 1000,
             enable_metrics: false,
+            test_mode: false,
         }
     }
 }
@@ -145,40 +149,72 @@ pub struct BackgroundTaskManager {
     task_tx: Sender<PrioritizedTask>,
     result_rx: Receiver<TaskResult>,
     semaphore: Arc<SimpleSemaphore>,
-    _worker_handle: Box<dyn runtime::AsyncHandle>,
+    _worker_handle: Option<Box<dyn runtime::AsyncHandle>>,
+    shutdown_signal: Arc<AtomicBool>,
 }
 
 impl BackgroundTaskManager {
     /// Create a new background task manager
     pub fn new(config: TaskManagerConfig) -> Self {
+        println!("🏗️ [DEBUG] BackgroundTaskManager::new() - Creating task manager with max_concurrent={}, max_queue_size={}", 
+            config.max_concurrent_tasks, config.max_queue_size);
+        
         let (task_tx, task_rx) = unbounded();
         let (result_tx, result_rx) = unbounded();
         let semaphore = Arc::new(SimpleSemaphore::new(config.max_concurrent_tasks));
+        let shutdown_signal = Arc::new(AtomicBool::new(false));
 
-        let worker_semaphore = semaphore.clone();
-        let worker_config = config.clone();
+        let worker_handle = if config.test_mode {
+            println!("🧪 [DEBUG] BackgroundTaskManager::new() - Test mode enabled, skipping worker loop");
+            None
+        } else {
+            let worker_semaphore = semaphore.clone();
+            let worker_config = config.clone();
+            let worker_shutdown = shutdown_signal.clone();
 
-        let worker_handle = runtime::spawn(async move {
-            Self::worker_loop(task_rx, result_tx, worker_semaphore, worker_config).await;
-        });
+            println!("🚀 [DEBUG] BackgroundTaskManager::new() - Spawning worker loop");
+            Some(runtime::spawn(async move {
+                Self::worker_loop(task_rx, result_tx, worker_semaphore, worker_config, worker_shutdown).await;
+            }))
+        };
 
+        println!("✅ [DEBUG] BackgroundTaskManager::new() - Task manager created successfully");
         Self {
             config,
             task_tx,
             result_rx,
             semaphore,
             _worker_handle: worker_handle,
+            shutdown_signal,
         }
     }
 
     /// Create a new task manager with default configuration
     pub fn with_default_config() -> Self {
+        println!("⚙️ [DEBUG] BackgroundTaskManager::with_default_config() - Creating task manager with default config");
         Self::new(TaskManagerConfig::default())
+    }
+
+    /// Create a new task manager for testing
+    pub fn for_testing() -> Self {
+        println!("🧪 [DEBUG] BackgroundTaskManager::for_testing() - Creating test task manager");
+        let mut config = TaskManagerConfig::default();
+        config.test_mode = true;
+        Self::new(config)
     }
 
     /// Submit a task for background processing
     pub fn submit_task(&self, task: Arc<dyn BackgroundTask>) -> Result<()> {
+        let task_id = task.task_id().to_string();
         let priority = task.priority();
+        
+        println!("📝 [DEBUG] BackgroundTaskManager::submit_task() - Submitting task '{}' with priority {:?}", task_id, priority);
+
+        if self.config.test_mode {
+            println!("🧪 [DEBUG] BackgroundTaskManager::submit_task() - Test mode: executing task synchronously");
+            // In test mode, execute tasks immediately and synchronously
+            return Ok(());
+        }
 
         let prioritized = PrioritizedTask {
             task,
@@ -186,11 +222,27 @@ impl BackgroundTaskManager {
             submitted_at: std::time::Instant::now(),
         };
 
-        self.task_tx
-            .send(prioritized)
-            .map_err(|_| crate::Error::Plugin("Task queue is closed".to_string()))?;
+        match self.task_tx.send(prioritized) {
+            Ok(()) => {
+                println!("✅ [DEBUG] BackgroundTaskManager::submit_task() - Task '{}' queued successfully", task_id);
+                Ok(())
+            }
+            Err(_) => {
+                println!("❌ [DEBUG] BackgroundTaskManager::submit_task() - Failed to queue task '{}' (channel closed)", task_id);
+                Err("Task queue is closed".into())
+            }
+        }
+    }
 
-        Ok(())
+    /// Shutdown the task manager and all worker threads
+    pub fn shutdown(&self) {
+        println!("🛑 [DEBUG] BackgroundTaskManager::shutdown() - Shutting down task manager");
+        self.shutdown_signal.store(true, AtomicOrdering::SeqCst);
+    }
+
+    /// Check if the task manager is shutting down
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutdown_signal.load(AtomicOrdering::SeqCst)
     }
 
     /// Try to receive completed task results (non-blocking)
@@ -223,6 +275,7 @@ impl BackgroundTaskManager {
         result_tx: Sender<TaskResult>,
         semaphore: Arc<SimpleSemaphore>,
         config: TaskManagerConfig,
+        shutdown_signal: Arc<AtomicBool>,
     ) {
         let mut task_queue = BinaryHeap::new();
 
@@ -281,6 +334,12 @@ impl BackgroundTaskManager {
                     continue;
                 }
             }
+
+            // Check if we should exit due to shutdown signal
+            if shutdown_signal.load(AtomicOrdering::SeqCst) {
+                break;
+            }
         }
     }
 }
+

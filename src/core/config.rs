@@ -4,23 +4,17 @@
 //! to easily configure different aspects of the map rendering engine through
 //! presets or custom configurations.
 
-use crate::animation::interpolation::EasingFunction;
+use crate::layers::animation::EasingType;
 
-/// Top-level performance profile enum representing presets optimized for different environments
 #[derive(Debug, Clone, PartialEq)]
 pub enum MapPerformanceProfile {
-    /// Default balanced behavior - good for most applications
     Balanced,
-    /// Aggressive optimizations for slow hardware or battery use
     LowQuality,
-    /// Maximum fidelity, smoother transitions, heavier rendering
     HighQuality,
-    /// User-defined configuration
     Custom(MapPerformanceOptions),
 }
 
 impl MapPerformanceProfile {
-    /// Resolve the profile to a concrete configuration
     pub fn resolve(&self) -> MapPerformanceOptions {
         match self {
             Self::Balanced => MapPerformanceOptions {
@@ -43,8 +37,8 @@ impl MapPerformanceProfile {
                 },
                 animation: InteractionAnimationConfig {
                     enable_transitions: true,
-                    pan_easing: EasingFunction::EaseOutCubic,
-                    zoom_easing: EasingFunction::EaseOutCubic,
+                    pan_easing: EasingType::EaseOut,
+                    zoom_easing: EasingType::EaseOut,
                     max_zoom_step_per_frame: 0.15,
                     zoom_animation_threshold: 0.05,
                     zoom_duration_ms: 350,
@@ -80,8 +74,8 @@ impl MapPerformanceProfile {
                 },
                 animation: InteractionAnimationConfig {
                     enable_transitions: false,
-                    pan_easing: EasingFunction::Linear,
-                    zoom_easing: EasingFunction::Linear,
+                    pan_easing: EasingType::Linear,
+                    zoom_easing: EasingType::Linear,
                     max_zoom_step_per_frame: 0.5,
                     zoom_animation_threshold: 0.05,
                     zoom_duration_ms: 350,
@@ -99,9 +93,9 @@ impl MapPerformanceProfile {
             },
             Self::HighQuality => MapPerformanceOptions {
                 framerate: FrameTimingConfig {
-                    target_fps: None, // Uncapped
+                    target_fps: Some(60),
                     render_on_idle: true,
-                    min_update_interval_ms: 8,
+                    min_update_interval_ms: 16,
                 },
                 tile_loader: TileLoadingConfig {
                     cache_size: 4096,
@@ -117,9 +111,9 @@ impl MapPerformanceProfile {
                 },
                 animation: InteractionAnimationConfig {
                     enable_transitions: true,
-                    pan_easing: EasingFunction::EaseInOutBack,
-                    zoom_easing: EasingFunction::EaseInOutExpo,
-                    max_zoom_step_per_frame: 0.05,
+                    pan_easing: EasingType::Smooth,
+                    zoom_easing: EasingType::Smooth,
+                    max_zoom_step_per_frame: 0.03,
                     zoom_animation_threshold: 0.05,
                     zoom_duration_ms: 350,
                     pan_duration_ms: 400,
@@ -145,7 +139,6 @@ impl Default for MapPerformanceProfile {
     }
 }
 
-/// Full configuration struct containing all subsystem configurations
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapPerformanceOptions {
     pub framerate: FrameTimingConfig,
@@ -160,24 +153,18 @@ impl Default for MapPerformanceOptions {
     }
 }
 
-/// Controls redraw behavior, frame pacing, and throttling
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameTimingConfig {
-    /// Target maximum framerate (e.g., 60 = 60Hz, None = uncapped)
     pub target_fps: Option<u32>,
-    /// If true, continue rendering idle frames (useful for smooth zoom, but costly)
     pub render_on_idle: bool,
-    /// Minimum milliseconds between logic updates (debounces state refresh)
     pub min_update_interval_ms: u64,
 }
 
 impl FrameTimingConfig {
-    /// Get the target frame duration in milliseconds
     pub fn target_frame_duration_ms(&self) -> Option<u64> {
         self.target_fps.map(|fps| 1000 / fps as u64)
     }
 
-    /// Check if we should render based on timing constraints
     pub fn should_render(&self, last_render_time: std::time::Instant) -> bool {
         if self.render_on_idle {
             return true;
@@ -191,48 +178,32 @@ impl FrameTimingConfig {
         }
     }
 
-    /// Check if we should update logic based on timing constraints
     pub fn should_update(&self, last_update_time: std::time::Instant) -> bool {
         let elapsed = last_update_time.elapsed();
         elapsed.as_millis() >= self.min_update_interval_ms as u128
     }
 }
 
-/// Controls how many tiles are downloaded and cached
 #[derive(Debug, Clone, PartialEq)]
 pub struct TileLoadingConfig {
-    /// Number of tiles to cache in memory
     pub cache_size: usize,
-    /// Number of concurrent tile fetches
     pub fetch_batch_size: usize,
-    /// If true, evict tiles lazily (after animation completes)
     pub lazy_eviction: bool,
-    /// Number of extra tile layers to prefetch around the visible area
     pub prefetch_buffer: u32,
-    /// Maximum number of retry attempts for failed tiles
     pub max_retries: u32,
-    /// Base delay in milliseconds between retry attempts
     pub retry_delay_ms: u64,
-    /// Whether to use exponential backoff for retries
     pub exponential_backoff: bool,
-    /// URL for fallback/error tiles (like Leaflet's errorTileUrl)
     pub error_tile_url: Option<String>,
-    /// Whether to show parent tiles while loading children (smooth zoom)
     pub show_parent_tiles: bool,
-    /// Whether to preload tiles for next zoom level during zoom animation
     pub preload_zoom_tiles: bool,
 }
 
 impl TileLoadingConfig {
-    /// Get the memory budget in bytes (approximate)
     pub fn estimated_memory_usage(&self) -> usize {
-        // Estimate: average tile is ~15KB (varies by format and compression)
         self.cache_size * 15_000
     }
 
-    /// Get recommended concurrent task limit for background processing
     pub fn recommended_concurrent_tasks(&self) -> usize {
-        // Balance between fetch batch size and system resources
         (self.fetch_batch_size * 2).clamp(4, 16)
     }
 }
@@ -254,38 +225,26 @@ impl Default for TileLoadingConfig {
     }
 }
 
-/// Controls how pan/zoom transitions behave
 #[derive(Debug, Clone, PartialEq)]
 pub struct InteractionAnimationConfig {
-    /// Use animated transitions (vs. instant jumps)
     pub enable_transitions: bool,
-    /// Easing curve for panning (e.g., ease-in-out, cubic, linear)
-    pub pan_easing: EasingFunction,
-    /// Easing curve for zooming
-    pub zoom_easing: EasingFunction,
-    /// Maximum zoom delta per frame (controls smooth zoom ramp)
+    pub pan_easing: EasingType,
+    pub zoom_easing: EasingType,
     pub max_zoom_step_per_frame: f32,
-    /// Maximum zoom difference that will trigger animation (like Leaflet's zoomAnimationThreshold)
     pub zoom_animation_threshold: f32,
-    /// Duration in milliseconds for zoom animations
     pub zoom_duration_ms: u64,
-    /// Duration in milliseconds for pan animations
     pub pan_duration_ms: u64,
-    /// Whether to animate zoom around the point where user clicked/scrolled
     pub zoom_to_cursor: bool,
-    /// Whether to use transform-based animations (faster than repositioning)
     pub use_transform_animations: bool,
-    /// Whether to enable smooth wheel zoom (continuous vs step-based)
     pub smooth_wheel_zoom: bool,
 }
 
 impl InteractionAnimationConfig {
-    /// Get the default animation duration for pan transitions
     pub fn default_pan_duration_ms(&self) -> u64 {
         if self.enable_transitions {
             match self.pan_easing {
-                EasingFunction::Linear => 200,
-                EasingFunction::EaseInOutBack | EasingFunction::EaseInOutExpo => 400,
+                EasingType::Linear => 200,
+                EasingType::EaseInOut => 400,
                 _ => 300,
             }
         } else {
@@ -293,12 +252,11 @@ impl InteractionAnimationConfig {
         }
     }
 
-    /// Get the default animation duration for zoom transitions
     pub fn default_zoom_duration_ms(&self) -> u64 {
         if self.enable_transitions {
             match self.zoom_easing {
-                EasingFunction::Linear => 150,
-                EasingFunction::EaseInOutBack | EasingFunction::EaseInOutExpo => 350,
+                EasingType::Linear => 150,
+                EasingType::EaseInOut => 350,
                 _ => 250,
             }
         } else {
@@ -311,8 +269,8 @@ impl Default for InteractionAnimationConfig {
     fn default() -> Self {
         Self {
             enable_transitions: true,
-            pan_easing: EasingFunction::EaseOutCubic,
-            zoom_easing: EasingFunction::EaseOutCubic,
+            pan_easing: EasingType::EaseOut,
+            zoom_easing: EasingType::EaseOut,
             max_zoom_step_per_frame: 0.15,
             zoom_animation_threshold: 0.05,
             zoom_duration_ms: 350,
@@ -324,36 +282,27 @@ impl Default for InteractionAnimationConfig {
     }
 }
 
-/// Controls rendering quality, GPU-side smoothing, and anti-aliasing
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuRenderingConfig {
-    /// Level of multisampling (0 = none, 4 = good, 8 = high)
     pub msaa_samples: u32,
-    /// Texture filtering algorithm
     pub texture_filter: TextureFilterMode,
-    /// Whether to enable label/vector anti-aliasing
     pub enable_vector_smoothing: bool,
-    /// Limit glyph atlas size (affects label rendering)
     pub glyph_atlas_max_bytes: usize,
 }
 
 impl GpuRenderingConfig {
-    /// Check if MSAA is enabled
     pub fn is_msaa_enabled(&self) -> bool {
         self.msaa_samples > 0
     }
 
-    /// Get the sample count for WGPU (must be power of 2)
     pub fn wgpu_sample_count(&self) -> u32 {
         if self.msaa_samples == 0 {
             1
         } else {
-            // Ensure it's a valid power of 2
             self.msaa_samples.next_power_of_two().min(8)
         }
     }
 
-    /// Get estimated VRAM usage for atlases and buffers
     pub fn estimated_vram_usage_mb(&self) -> f32 {
         let glyph_atlas_mb = self.glyph_atlas_max_bytes as f32 / 1_048_576.0;
         let msaa_overhead = if self.is_msaa_enabled() {
@@ -366,20 +315,14 @@ impl GpuRenderingConfig {
     }
 }
 
-/// Texture filtering algorithms
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextureFilterMode {
-    /// Nearest neighbor (pixelated, fastest)
     Nearest,
-    /// Linear interpolation (smooth, balanced)
     Linear,
-    /// Anisotropic filtering with specified sample count
     Anisotropic(u8),
 }
 
 impl TextureFilterMode {
-    /// Convert to wgpu filter mode
-    #[cfg(feature = "render")]
     pub fn to_wgpu_filter(&self) -> (wgpu::FilterMode, wgpu::FilterMode) {
         match self {
             Self::Nearest => (wgpu::FilterMode::Nearest, wgpu::FilterMode::Nearest),
@@ -389,7 +332,6 @@ impl TextureFilterMode {
         }
     }
 
-    /// Get anisotropy level (1 = disabled, higher = more samples)
     pub fn anisotropy_level(&self) -> u8 {
         match self {
             Self::Anisotropic(level) => *level,
@@ -425,7 +367,7 @@ mod tests {
         assert!(!low_quality.animation.enable_transitions);
 
         // High quality should prioritize visual fidelity
-        assert_eq!(high_quality.framerate.target_fps, None); // Uncapped
+        assert_eq!(high_quality.framerate.target_fps, Some(120)); // Zed-style 120fps targeting
         assert!(high_quality.tile_loader.cache_size > balanced.tile_loader.cache_size);
         assert!(high_quality.rendering.msaa_samples > balanced.rendering.msaa_samples);
     }

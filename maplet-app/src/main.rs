@@ -1,267 +1,272 @@
-use maplet::{
-    core::{geo::LatLng, geo::Point},
-    layers::tile::TileLayer,
-    ui::widget::{MapWidget, MapWidgetConfig},
-    Map,
-};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use maplet::{Map, MapTheme};
 
-/// Standalone map viewer application
+/// Standalone map viewer application demonstrating simple maplet usage
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-
-    // Set up graceful shutdown
-    let shutdown_flag = Arc::new(AtomicBool::new(false));
-    let shutdown_flag_clone = shutdown_flag.clone();
-
-    // Handle Ctrl+C gracefully
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        println!("\nReceived Ctrl+C, shutting down gracefully...");
-        shutdown_flag_clone.store(true, Ordering::Relaxed);
-    });
+    
+    println!("🚀 [DEBUG] Starting Maplet app...");
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
-            .with_title("Maplet - Rust Map Viewer")
+            .with_title("Maplet - Simple Map Demo")
             .with_close_button(true),
         follow_system_theme: true,
         ..Default::default()
     };
 
-    // Run the application with shutdown handling
+    println!("🖼️ [DEBUG] Creating eframe app...");
+    
+    // Run the app with proper shutdown handling
     let app_result = eframe::run_native(
-        "maplet-app",
+        "Maplet Demo",
         options,
-        Box::new(move |cc| Box::new(MapletApp::new(cc, shutdown_flag))),
+        Box::new(|_cc| {
+            println!("🎯 [DEBUG] eframe app creation callback called");
+            Box::new(MapletApp::new())
+        }),
     );
 
-    println!("Application shutdown complete.");
-    app_result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    if let Err(err) = app_result {
+        eprintln!("❌ [DEBUG] Application error: {:?}", err);
+    }
+
+    println!("👋 [DEBUG] Main function completed");
+    Ok(())
 }
 
-/// The main application struct
 struct MapletApp {
-    map_widget: MapWidget,
-    selected_preset: String,
+    selected_location: (f64, f64), // Just lat, lng - no complex types needed
+    theme: MapTheme,
+    show_controls: bool,
     show_debug_panel: bool,
-    show_layer_panel: bool,
-    shutdown_flag: Arc<AtomicBool>,
+    shutdown_requested: bool,
+    /// Zed-inspired performance mode selection
+    performance_mode: maplet::core::config::MapPerformanceProfile,
+    /// Animation style selection
+    animation_style: maplet::layers::animation::EasingType,
 }
 
 impl MapletApp {
-    fn new(_cc: &eframe::CreationContext<'_>, shutdown_flag: Arc<AtomicBool>) -> Self {
-        // Create map centered on San Francisco
-        let center = LatLng::new(37.7749, -122.4194);
-        let zoom = 12.0;
-        let size = Point::new(1200.0, 800.0);
-
-        let mut map = Map::new(center, zoom, size);
-
-        // Add OpenStreetMap tiles by default
-        let osm_layer = TileLayer::openstreetmap("osm".to_string(), "OpenStreetMap".to_string());
-        if let Err(e) = map.add_layer(Box::new(osm_layer)) {
-            eprintln!("Failed to add OSM layer: {}", e);
-        }
-
-        let config = MapWidgetConfig {
-            interactive: true,
-            show_zoom_controls: true,
-            show_attribution: true,
-            min_zoom: 1.0,
-            max_zoom: 18.0,
-            cursor: maplet::ui::widget::MapCursor::Default,
-            background_color: egui::Color32::from_rgb(230, 230, 230),
-            attribution: "© OpenStreetMap contributors".to_string(),
-            zoom_snap: 1.0,
-            zoom_delta: 1.0,
-        };
-
-        let map_widget = MapWidget::with_config(map, config);
-
+    fn new() -> Self {
+        println!("🎯 [DEBUG] MapletApp::new() - Creating new app instance");
         Self {
-            map_widget,
-            selected_preset: "San Francisco".to_string(),
-            show_debug_panel: true,
-            show_layer_panel: true,
-            shutdown_flag,
+            selected_location: (37.7749, -122.4194), // San Francisco
+            theme: MapTheme::Light,
+            show_controls: true,
+            show_debug_panel: false,
+            shutdown_requested: false,
+            performance_mode: maplet::core::config::MapPerformanceProfile::Balanced, 
+            animation_style: maplet::layers::animation::EasingType::UltraSmooth,
         }
     }
 
+    /// Show location preset buttons - much cleaner UI
     fn location_presets(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("Quick locations:");
-
-            let presets = [
-                ("San Francisco", LatLng::new(37.7749, -122.4194), 12.0),
-                ("New York", LatLng::new(40.7128, -74.0060), 11.0),
-                ("London", LatLng::new(51.5074, -0.1278), 11.0),
-                ("Tokyo", LatLng::new(35.6762, 139.6503), 11.0),
-                ("Sydney", LatLng::new(-33.8688, 151.2093), 11.0),
-                ("Cape Town", LatLng::new(-33.9249, 18.4241), 11.0),
-            ];
-
-            for (name, center, zoom) in presets {
-                if ui
-                    .selectable_label(self.selected_preset == name, name)
-                    .clicked()
-                {
-                    self.selected_preset = name.to_string();
-                    let _ = self.map_widget.set_view(center, zoom);
-                }
+            if ui.button("🏙️ San Francisco").clicked() {
+                println!("🏙️ [DEBUG] San Francisco location selected");
+                self.selected_location = (37.7749, -122.4194);
+            }
+            if ui.button("🗽 New York").clicked() {
+                println!("🗽 [DEBUG] New York location selected");
+                self.selected_location = (40.7128, -74.0060);
+            }
+            if ui.button("🌉 London").clicked() {
+                println!("🌉 [DEBUG] London location selected");
+                self.selected_location = (51.5074, -0.1278);
+            }
+            if ui.button("🗼 Tokyo").clicked() {
+                println!("🗼 [DEBUG] Tokyo location selected");
+                self.selected_location = (35.6762, 139.6503);
+            }
+            if ui.button("🦘 Sydney").clicked() {
+                println!("🦘 [DEBUG] Sydney location selected");
+                self.selected_location = (-33.8688, 151.2093);
             }
         });
     }
 }
 
 impl eframe::App for MapletApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check for shutdown signal
-        if self.shutdown_flag.load(Ordering::Relaxed) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        static mut UPDATE_COUNTER: u64 = 0;
+        unsafe {
+            UPDATE_COUNTER += 1;
+            if UPDATE_COUNTER % 60 == 0 {
+                println!("🔄 [DEBUG] App update() called {} times", UPDATE_COUNTER);
+            }
+        }
+        
+        // Handle window close button properly 
+        if ctx.input(|i| i.viewport().close_requested()) {
+            println!("❌ [DEBUG] Window close button clicked, shutting down...");
+            self.shutdown_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            std::process::exit(0);
+        }
+        
+        // Handle graceful shutdown
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            println!("⚠️ [DEBUG] Escape key pressed, requesting close");
+            self.shutdown_requested = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            std::process::exit(0);
+        }
+
+        // Don't update UI if shutdown is requested
+        if self.shutdown_requested {
             return;
         }
 
-        // Top menu bar
+        // Top panel with simple controls
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("View", |ui| {
-                    ui.checkbox(&mut self.show_debug_panel, "Debug Panel");
-                    ui.checkbox(&mut self.show_layer_panel, "Layer Panel");
-                    ui.separator();
-                    ui.menu_button("Performance", |ui| {
-                        ui.label("Performance Profile:");
-                        if ui.button("Balanced").clicked() {
-                            // Apply balanced performance settings
-                            if let Ok(mut map) = self.map_widget.map.lock() {
-                                use maplet::core::config::MapPerformanceProfile;
-                                map.set_performance(MapPerformanceProfile::Balanced.resolve());
-                            }
-                        }
-                        if ui.button("High Quality").clicked() {
-                            // Apply high quality settings
-                            if let Ok(mut map) = self.map_widget.map.lock() {
-                                use maplet::core::config::MapPerformanceProfile;
-                                map.set_performance(MapPerformanceProfile::HighQuality.resolve());
-                            }
-                        }
-                        if ui.button("Low Quality").clicked() {
-                            // Apply low quality settings
-                            if let Ok(mut map) = self.map_widget.map.lock() {
-                                use maplet::core::config::MapPerformanceProfile;
-                                map.set_performance(MapPerformanceProfile::LowQuality.resolve());
-                            }
-                        }
-                    });
-                });
-
+                ui.label("🗺️ Maplet Demo");
+                
                 ui.separator();
+                
+                // Location presets
                 self.location_presets(ui);
-
+                
+                ui.separator();
+                
+                // Theme selector
+                ui.label("Theme:");
+                egui::ComboBox::from_id_source("theme")
+                    .selected_text(format!("{:?}", self.theme))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.theme, MapTheme::Light, "Light");
+                        ui.selectable_value(&mut self.theme, MapTheme::Dark, "Dark");
+                        ui.selectable_value(&mut self.theme, MapTheme::Satellite, "Satellite");
+                    });
+                
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(viewport) = self.map_widget.viewport() {
-                        ui.label(format!(
-                            "Center: {:.4}, {:.4} | Zoom: {:.2}",
-                            viewport.center.lat, viewport.center.lng, viewport.zoom
-                        ));
+                    ui.checkbox(&mut self.show_debug_panel, "Debug");
+                    ui.checkbox(&mut self.show_controls, "Controls");
+                    
+                    // Add quit button for testing
+                    if ui.button("Quit").clicked() {
+                        println!("🚪 [DEBUG] Quit button clicked");
+                        self.shutdown_requested = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        std::process::exit(0);
                     }
                 });
             });
         });
 
-        // Debug panel
-        if self.show_debug_panel {
-            egui::SidePanel::left("debug_panel")
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.heading("Debug Info");
-                    ui.separator();
-
-                    ui.label(format!("Dragging: {}", self.map_widget.is_dragging()));
-                    ui.label(format!("Has Focus: {}", self.map_widget.has_focus()));
-
-                    ui.separator();
-                    ui.heading("Performance");
-
-                    // Add performance metrics here when available
-                    ui.label("FPS: ~60");
-                    ui.label("Tiles Loaded: N/A");
-                    ui.label("Background Tasks: N/A");
-
-                    ui.separator();
-                    ui.heading("Configuration");
-
-                    ui.label("Tile Configuration:");
-                    ui.label("  • Prefetch Buffer: 2 tiles");
-                    ui.label("  • Max Retries: 3");
-                    ui.label("  • Cache Size: 1024 tiles");
-
-                    ui.label("Animation Configuration:");
-                    ui.label("  • Zoom to Cursor: Enabled");
-                    ui.label("  • Smooth Wheel Zoom: Enabled");
-                    ui.label("  • Transform Animations: Enabled");
-                });
-        }
-
-        // Layer control panel
-        if self.show_layer_panel {
-            egui::SidePanel::right("layer_panel")
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.heading("Layers");
-                    ui.separator();
-
-                    ui.label("Base Layers:");
-                    ui.radio_value(&mut (), (), "OpenStreetMap");
-
-                    ui.separator();
-                    ui.label("Overlay Layers:");
-                    ui.checkbox(&mut false, "Traffic");
-                    ui.checkbox(&mut false, "Transit");
-                    ui.checkbox(&mut false, "Bicycle");
-
-                    ui.separator();
-                    ui.heading("Map Controls");
-
-                    if ui.button("Fit World").clicked() {
-                        let _ = self.map_widget.set_view(LatLng::new(0.0, 0.0), 2.0);
+        // 1. Performance & Debug Panel (collapsible)
+        egui::SidePanel::left("control_panel")
+            .resizable(true)
+            .default_width(250.0)
+            .show(ctx, |ui| {
+                ui.heading("🎛️ Map Controls");
+                
+                ui.separator();
+                
+                ui.label("📍 Location:");
+                ui.horizontal(|ui| {
+                    if ui.button("🌉 San Francisco").clicked() {
+                        self.selected_location = (37.7749, -122.4194);
                     }
-
-                    ui.separator();
-                    ui.label("Quick Zoom:");
-                    ui.horizontal(|ui| {
-                        if ui.button("City").clicked() {
-                            if let Some(viewport) = self.map_widget.viewport() {
-                                let _ = self.map_widget.set_view(viewport.center, 12.0);
-                            }
-                        }
-                        if ui.button("Country").clicked() {
-                            if let Some(viewport) = self.map_widget.viewport() {
-                                let _ = self.map_widget.set_view(viewport.center, 6.0);
-                            }
-                        }
-                        if ui.button("World").clicked() {
-                            if let Some(viewport) = self.map_widget.viewport() {
-                                let _ = self.map_widget.set_view(viewport.center, 2.0);
-                            }
-                        }
-                    });
+                    if ui.button("🏰 London").clicked() {
+                        self.selected_location = (51.5074, -0.1278);
+                    }
                 });
-        }
+                ui.horizontal(|ui| {
+                    if ui.button("🗼 Tokyo").clicked() {
+                        self.selected_location = (35.6762, 139.6503);
+                    }
+                    if ui.button("🗽 New York").clicked() {
+                        self.selected_location = (40.7128, -74.0060);
+                    }
+                });
+                
+                ui.separator();
+                
+                ui.label("🎨 Theme:");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.theme, MapTheme::Light, "☀️ Light");
+                    ui.selectable_value(&mut self.theme, MapTheme::Dark, "🌙 Dark");
+                });
+                
+                ui.separator();
+                
+                ui.label("⚡ Performance (Zed-inspired):");
+                ui.vertical(|ui| {
+                    ui.selectable_value(&mut self.performance_mode, 
+                        maplet::core::config::MapPerformanceProfile::LowQuality, 
+                        "🔋 Battery (30fps)");
+                    ui.selectable_value(&mut self.performance_mode, 
+                        maplet::core::config::MapPerformanceProfile::Balanced, 
+                        "⚖️ Balanced (60fps)");
+                    ui.selectable_value(&mut self.performance_mode, 
+                        maplet::core::config::MapPerformanceProfile::HighQuality, 
+                        "🚀 High Quality (60fps)");
+                });
+                
+                ui.separator();
+                
+                ui.label("🎭 Animation Style:");
+                ui.vertical(|ui| {
+                    ui.selectable_value(&mut self.animation_style, 
+                        maplet::layers::animation::EasingType::Linear, 
+                        "📐 Linear");
+                    ui.selectable_value(&mut self.animation_style, 
+                        maplet::layers::animation::EasingType::EaseOut, 
+                        "📉 Ease Out");
+                    ui.selectable_value(&mut self.animation_style, 
+                        maplet::layers::animation::EasingType::Smooth, 
+                        "✨ Zed Smooth");
+                    ui.selectable_value(&mut self.animation_style, 
+                        maplet::layers::animation::EasingType::UltraSmooth, 
+                        "🌟 Ultra Smooth");
+                });
+                
+                ui.separator();
+                
+                ui.checkbox(&mut self.show_controls, "🔧 Show map controls");
+                ui.checkbox(&mut self.show_debug_panel, "🐛 Show debug info");
+                
+                if ui.button("🚪 Exit").clicked() {
+                    self.shutdown_requested = true;
+                }
+            });
 
-        // Main map area
+        // 2. Main map area
         egui::CentralPanel::default().show(ctx, |ui| {
-            use maplet::ui::widget::MapWidgetExt;
-            ui.map_widget(&mut self.map_widget);
+            if self.show_debug_panel {
+                ui.horizontal(|ui| {
+                    ui.label(format!("📍 Location: ({:.4}, {:.4})", 
+                        self.selected_location.0, self.selected_location.1));
+                    ui.label(format!("🎨 Theme: {:?}", self.theme));
+                    ui.label(format!("⚡ Performance: {:?}", self.performance_mode));
+                });
+                ui.separator();
+            }
+            
+            ui.add(
+                Map::new()
+                    .center(self.selected_location.0, self.selected_location.1)
+                    .zoom(12.0)
+                    .theme(self.theme)
+                    .controls(self.show_controls)
+                    .attribution_text("© Maplet Demo - Zed-Inspired Smoothness")
+                    // TODO: Add these methods to the Map widget
+                    // .performance_profile(self.performance_mode)
+                    // .animation_style(self.animation_style)
+            );
         });
+
+        // Handle shutdown
+        if self.shutdown_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        println!("Application is shutting down...");
-        // Perform any cleanup here
-        self.shutdown_flag.store(true, Ordering::Relaxed);
+        println!("🚪 [DEBUG] MapletApp::on_exit() called - Application shutting down gracefully");
     }
-}
+} 

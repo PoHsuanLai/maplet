@@ -249,21 +249,11 @@ pub enum ConversionError {
     ConversionFailed(String),
 }
 
-/// Common conversion utilities
-pub struct ConversionUtils;
+/// Pixel/meter conversion utilities (specialized functions not in LatLng)
+pub struct PixelMetrics;
 
-impl ConversionUtils {
-    /// Converts degrees to radians
-    pub fn deg_to_rad(degrees: f64) -> f64 {
-        degrees * std::f64::consts::PI / 180.0
-    }
-
-    /// Converts radians to degrees
-    pub fn rad_to_deg(radians: f64) -> f64 {
-        radians * 180.0 / std::f64::consts::PI
-    }
-
-    /// Converts between pixel and geographic coordinates using a given scale
+impl PixelMetrics {
+    /// Converts pixels to meters at a given zoom level and latitude
     pub fn pixels_to_meters(pixels: f64, zoom: f64, latitude: f64) -> f64 {
         // Meters per pixel at given zoom and latitude
         let resolution = 156543.03392804097 / 2_f64.powf(zoom);
@@ -276,16 +266,6 @@ impl ConversionUtils {
         let resolution = 156543.03392804097 / 2_f64.powf(zoom);
         let meters_per_pixel = resolution * latitude.to_radians().cos();
         meters / meters_per_pixel
-    }
-
-    /// Normalizes longitude to [-180, 180] range
-    pub fn normalize_longitude(lng: f64) -> f64 {
-        LatLng::wrap_lng(lng)
-    }
-
-    /// Clamps latitude to valid range
-    pub fn clamp_latitude(lat: f64) -> f64 {
-        LatLng::clamp_lat(lat)
     }
 }
 
@@ -331,11 +311,13 @@ mod tests {
     }
 
     #[test]
-    fn test_conversion_utils() {
-        assert!((ConversionUtils::deg_to_rad(180.0) - std::f64::consts::PI).abs() < 1e-10);
-        assert!((ConversionUtils::rad_to_deg(std::f64::consts::PI) - 180.0).abs() < 1e-10);
-        assert_eq!(ConversionUtils::normalize_longitude(181.0), -179.0);
-        assert_eq!(ConversionUtils::clamp_latitude(91.0), 85.0511287798);
+    fn test_coordinate_utilities() {
+        // Test degree/radian conversion using built-in Rust methods
+        assert!((180.0_f64.to_radians() - std::f64::consts::PI).abs() < 1e-10);
+        assert!((std::f64::consts::PI.to_degrees() - 180.0).abs() < 1e-10);
+        // Test coordinate clamping/wrapping using LatLng methods
+        assert_eq!(LatLng::wrap_lng(181.0), -179.0);
+        assert_eq!(LatLng::clamp_lat(91.0), 85.0511287798);
     }
 
     #[test]

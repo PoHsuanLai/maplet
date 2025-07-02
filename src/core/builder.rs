@@ -5,6 +5,7 @@
 
 use crate::{
     background::tasks::TaskManagerConfig,
+    layers::tile::TileSource,
     core::{
         config::{
             InteractionAnimationConfig, MapPerformanceOptions, MapPerformanceProfile,
@@ -14,7 +15,6 @@ use crate::{
         map::{Map, MapOptions},
         viewport::Viewport,
     },
-    tiles::source::TileSource,
     Result,
 };
 
@@ -83,7 +83,7 @@ impl MapBuilder {
 
     /// Set custom performance options
     pub fn with_performance_options(mut self, options: MapPerformanceOptions) -> Self {
-        self.performance_options = Some(options);
+        self.performance = MapPerformanceProfile::Custom(options);
         self
     }
 
@@ -228,6 +228,39 @@ impl MapBuilder {
         self
     }
 
+    /// Enable spacecraft-style zoom animations with dramatic effects
+    pub fn with_spacecraft_zoom(mut self) -> Self {
+        let mut config = self.animation_config.unwrap_or_default();
+        config.zoom_duration_ms = 600;
+        config.zoom_easing = crate::layers::animation::EasingType::SpacecraftZoom;
+        config.zoom_animation_threshold = 6.0; // Allow larger zoom differences
+        self.animation_config = Some(config);
+        self
+    }
+
+    /// Enable dynamic zoom animations with slight overshoot
+    pub fn with_dynamic_zoom(mut self) -> Self {
+        let mut config = self.animation_config.unwrap_or_default();
+        config.zoom_duration_ms = 400;
+        config.zoom_easing = crate::layers::animation::EasingType::DynamicZoom;
+        config.zoom_animation_threshold = 5.0;
+        self.animation_config = Some(config);
+        self
+    }
+
+    /// Set custom zoom animation easing and duration
+    pub fn with_zoom_easing(
+        mut self,
+        easing: crate::layers::animation::EasingType,
+        duration_ms: u64,
+    ) -> Self {
+        let mut config = self.animation_config.unwrap_or_default();
+        config.zoom_easing = easing;
+        config.zoom_duration_ms = duration_ms;
+        self.animation_config = Some(config);
+        self
+    }
+
     /// Build the map with the configured options
     pub fn build(self) -> Result<Map> {
         // Ensure we have a viewport
@@ -245,6 +278,7 @@ impl MapBuilder {
                 .recommended_concurrent_tasks(),
             max_queue_size: (performance_options.tile_loader.cache_size * 2).max(1000),
             enable_metrics: false,
+            test_mode: false,
         });
 
         // Create the map with performance-aware configuration
@@ -254,6 +288,14 @@ impl MapBuilder {
             performance_options,
             task_config,
         )?;
+
+        // Apply animation configuration if provided
+        if let Some(animation_config) = &self.animation_config {
+            let duration = std::time::Duration::from_millis(animation_config.zoom_duration_ms);
+            map.set_zoom_animation_style(animation_config.zoom_easing, duration);
+            map.set_zoom_animation_threshold(animation_config.zoom_animation_threshold as f64);
+            map.set_zoom_animation_enabled(animation_config.enable_transitions);
+        }
 
         // Add tile source if provided
         if let Some(_tile_source) = self.tile_source {
@@ -349,6 +391,7 @@ impl MapBuilder {
             .with_parent_tile_fallbacks(true)
             .with_zoom_animation(350, true, true)
             .with_transform_animations(true)
+            .with_dynamic_zoom() // Use dynamic zoom for high quality
     }
 
     /// Create a map optimized for performance on slower devices
@@ -370,6 +413,28 @@ impl MapBuilder {
             .with_tile_retries(3, 500, true)
             .with_parent_tile_fallbacks(true)
             .with_zoom_animation(350, true, true)
+            .with_transform_animations(true)
+    }
+
+    /// Create a map with spacecraft-style zoom animations for dramatic effect
+    pub fn spacecraft_map(center: LatLng, zoom: f64, size: Point) -> Self {
+        Self::new()
+            .with_center_and_zoom(center, zoom, size)
+            .with_tile_prefetching(2, true)
+            .with_tile_retries(3, 500, true)
+            .with_parent_tile_fallbacks(true)
+            .with_spacecraft_zoom()
+            .with_transform_animations(true)
+    }
+
+    /// Create a map with dynamic zoom animations with slight overshoot
+    pub fn dynamic_map(center: LatLng, zoom: f64, size: Point) -> Self {
+        Self::new()
+            .with_center_and_zoom(center, zoom, size)
+            .with_tile_prefetching(2, true)
+            .with_tile_retries(3, 500, true)
+            .with_parent_tile_fallbacks(true)
+            .with_dynamic_zoom()
             .with_transform_animations(true)
     }
 }
@@ -477,8 +542,8 @@ mod tests {
             },
             animation: InteractionAnimationConfig {
                 enable_transitions: true,
-                pan_easing: crate::animation::interpolation::EasingFunction::Linear,
-                zoom_easing: crate::animation::interpolation::EasingFunction::Linear,
+                pan_easing: crate::layers::animation::EasingType::Linear,
+                zoom_easing: crate::layers::animation::EasingType::Linear,
                 max_zoom_step_per_frame: 0.2,
                 zoom_animation_threshold: 0.05,
                 zoom_duration_ms: 350,

@@ -1,8 +1,8 @@
 use crate::Result;
 use fxhash::FxHashMap;
 use wgpu::{
-    Adapter, BindGroupLayout, Buffer, CommandEncoder, Device, Instance, Queue,
-    RenderPass, RenderPipeline as WgpuRenderPipeline, SurfaceConfiguration, Texture, TextureView,
+    Adapter, BindGroupLayout, Buffer, CommandEncoder, Device, Instance, Queue, RenderPass,
+    RenderPipeline as WgpuRenderPipeline, SurfaceConfiguration, Texture, TextureView,
 };
 
 /// Different types of render passes
@@ -356,16 +356,15 @@ impl RenderPipeline {
         Ok(())
     }
 
-    /// Create the marker rendering pipeline
+    /// Create the marker rendering pipeline (reuses vector pipeline)
     fn create_marker_pipeline(&mut self) -> Result<()> {
-        // For the moment we simply render markers with the vector pipeline, so
-        // no dedicated marker pipeline is required.
+        // Markers reuse the vector pipeline for now
         Ok(())
     }
 
-    /// Create the text rendering pipeline
+    /// Create the text rendering pipeline (reuses vector pipeline)  
     fn create_text_pipeline(&mut self) -> Result<()> {
-        // Text rendering will also reuse the vector pipeline for now.
+        // Text rendering reuses the vector pipeline for now
         Ok(())
     }
 

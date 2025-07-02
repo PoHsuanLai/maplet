@@ -1,10 +1,5 @@
 use crate::{
-    core::{
-        bounds::Bounds,
-        geo::Point,
-        map::Map,
-        viewport::Viewport,
-    },
+    core::{bounds::Bounds, geo::Point, map::Map, viewport::Viewport},
     input::events::InputEvent,
     plugins::base::PluginTrait,
     Result,
@@ -13,51 +8,35 @@ use crate::{
 #[cfg(feature = "egui")]
 use egui::Color32;
 
-#[cfg(feature = "render")]
 use crate::rendering::context::RenderContext;
 
 use crate::prelude::HashMap;
 
-/// Drawing tool types
 #[derive(Debug, Clone, PartialEq)]
 pub enum DrawTool {
-    /// Freehand drawing
     Freehand,
-    /// Straight line
     Line,
-    /// Rectangle
     Rectangle,
-    /// Circle
     Circle,
-    /// Polygon
     Polygon,
-    /// Marker placement
     Marker,
-    /// Text annotation
     Text,
-    /// Select and edit existing shapes
     Select,
-    /// Delete shapes
     Delete,
 }
 
-/// Drawing state
 #[derive(Debug, Clone)]
 pub enum DrawState {
-    /// Not drawing
     Idle,
-    /// Drawing in progress
     Drawing {
         tool: DrawTool,
         points: Vec<Point>,
         start_point: Point,
     },
-    /// Selecting shapes
     Selecting {
         selection_rect: Bounds,
         start_point: Point,
     },
-    /// Editing a shape
     Editing {
         shape_id: String,
         point_index: usize,
@@ -65,20 +44,13 @@ pub enum DrawState {
     },
 }
 
-/// Style for drawn shapes
 #[derive(Debug, Clone)]
 pub struct DrawStyle {
-    /// Stroke color
     pub stroke_color: Color32,
-    /// Fill color
     pub fill_color: Color32,
-    /// Stroke width
     pub stroke_width: f32,
-    /// Opacity
     pub opacity: f32,
-    /// Whether the shape is filled
     pub filled: bool,
-    /// Dash pattern for dashed lines
     pub dash_pattern: Option<Vec<f32>>,
 }
 
@@ -95,27 +67,18 @@ impl Default for DrawStyle {
     }
 }
 
-/// Drawn shape data
 #[derive(Debug, Clone)]
 pub struct DrawnShape {
-    /// Unique identifier
     pub id: String,
-    /// Shape type
     pub tool: DrawTool,
-    /// Points defining the shape
     pub points: Vec<Point>,
-    /// Style
     pub style: DrawStyle,
-    /// Metadata
     pub metadata: HashMap<String, String>,
-    /// Whether the shape is selected
     pub selected: bool,
-    /// Whether the shape is visible
     pub visible: bool,
 }
 
 impl DrawnShape {
-    /// Create a new drawn shape
     pub fn new(id: String, tool: DrawTool, points: Vec<Point>, style: DrawStyle) -> Self {
         Self {
             id,
@@ -128,7 +91,6 @@ impl DrawnShape {
         }
     }
 
-    /// Get the bounding box of the shape
     pub fn bounds(&self) -> Option<Bounds> {
         if self.points.is_empty() {
             return None;
@@ -152,7 +114,6 @@ impl DrawnShape {
         ))
     }
 
-    /// Check if a point is inside the shape
     pub fn contains_point(&self, point: &Point) -> bool {
         match self.tool {
             DrawTool::Rectangle => {
@@ -177,7 +138,6 @@ impl DrawnShape {
                 }
             }
             DrawTool::Polygon => {
-                // Simple point-in-polygon test using ray casting
                 if self.points.len() < 3 {
                     return false;
                 }
@@ -203,12 +163,10 @@ impl DrawnShape {
         }
     }
 
-    /// Add a point to the shape
     pub fn add_point(&mut self, point: Point) {
         self.points.push(point);
     }
 
-    /// Update a point at the given index
     pub fn update_point(&mut self, index: usize, point: Point) -> Result<()> {
         if index < self.points.len() {
             self.points[index] = point;
@@ -218,7 +176,6 @@ impl DrawnShape {
         }
     }
 
-    /// Remove a point at the given index
     pub fn remove_point(&mut self, index: usize) -> Result<()> {
         if index < self.points.len() {
             self.points.remove(index);
@@ -229,24 +186,15 @@ impl DrawnShape {
     }
 }
 
-/// Configuration for the draw plugin
 #[derive(Debug, Clone)]
 pub struct DrawConfig {
-    /// Default style for new shapes
     pub default_style: DrawStyle,
-    /// Whether drawing is enabled
     pub enabled: bool,
-    /// Whether to snap to grid
     pub snap_to_grid: bool,
-    /// Grid size for snapping
     pub grid_size: f64,
-    /// Whether to show drawing controls
     pub show_controls: bool,
-    /// Maximum number of shapes
     pub max_shapes: Option<usize>,
-    /// Whether to allow editing existing shapes
     pub allow_editing: bool,
-    /// Whether to allow deleting shapes
     pub allow_deleting: bool,
 }
 
@@ -265,26 +213,17 @@ impl Default for DrawConfig {
     }
 }
 
-/// Draw plugin implementation
 pub struct DrawPlugin {
-    /// Configuration
     config: DrawConfig,
-    /// Current drawing state
     state: DrawState,
-    /// Current drawing tool
     current_tool: DrawTool,
-    /// Drawn shapes
     shapes: HashMap<String, DrawnShape>,
-    /// Selected shape IDs
     selected_shapes: Vec<String>,
-    /// Whether the plugin is active
     active: bool,
-    /// Shape counter for generating unique IDs
     shape_counter: usize,
 }
 
 impl DrawPlugin {
-    /// Create a new draw plugin
     pub fn new() -> Self {
         Self {
             config: DrawConfig::default(),
@@ -297,7 +236,6 @@ impl DrawPlugin {
         }
     }
 
-    /// Create a new draw plugin with configuration
     pub fn with_config(config: DrawConfig) -> Self {
         Self {
             config,
@@ -310,18 +248,15 @@ impl DrawPlugin {
         }
     }
 
-    /// Set the current drawing tool
     pub fn set_tool(&mut self, tool: DrawTool) {
         self.current_tool = tool;
         self.state = DrawState::Idle;
     }
 
-    /// Get the current drawing tool
     pub fn current_tool(&self) -> &DrawTool {
         &self.current_tool
     }
 
-    /// Start drawing
     pub fn start_drawing(&mut self, start_point: Point) -> Result<()> {
         if !self.config.enabled || !self.active {
             return Ok(());

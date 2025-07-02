@@ -418,10 +418,7 @@ impl BackgroundTask for ParseGeoJsonFromUrlTask {
                 .await
                 .map_err(crate::Error::Network)?;
 
-            let geojson_str = response
-                .text()
-                .await
-                .map_err(crate::Error::Network)?;
+            let geojson_str = response.text().await.map_err(crate::Error::Network)?;
 
             // Parse in background thread
             let result = tokio::task::spawn_blocking(move || {

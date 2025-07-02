@@ -9,51 +9,54 @@ keywords = ["maps", "gis", "gpu", "egui", "wgpu"]
 categories = ["graphics", "visualization"]
 
 [features]
-default = ["render", "egui", "tokio-runtime", "debug"]
+default = ["egui", "wasm", "tokio-runtime", "animations", "debug", "serde-support"]
 
-# Core rendering with wgpu
-render = ["dep:wgpu", "dep:bytemuck", "dep:image", "dep:nalgebra"]
+egui = ["dep:eframe", "dep:egui", "dep:pollster"]
 
-# egui integration  
-egui = ["dep:eframe", "dep:egui", "render", "dep:pollster"]
-
-# WASM compatibility
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 
-# Tokio async runtime (optional)
 tokio-runtime = ["dep:tokio"]
 
-# Full app with viewer (used by maplet-app subcrate)
-app = ["render", "egui", "wasm", "tokio-runtime"]
+animations = []
 
-# Debug features
+clustering = []
+heatmaps = []
+vector-layers = []
+offline-tiles = []
+custom-projections = []
+
+performance-high = []
+performance-low = []
+
+tile-sources-osm = []
+tile-sources-mapbox = []
+tile-sources-custom = []
+
+app = ["egui", "wasm", "tokio-runtime", "animations", "clustering", "heatmaps", "vector-layers"]
+
 debug = ["dep:log", "dep:env_logger"]
+serde-support = ["dep:serde"]
 
 [dependencies]
-# Always available core dependencies
 futures = "0.3"
 async-trait = "0.1"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = "1.0"
 thiserror = "1.0"
 anyhow = "1.0"
 instant = "0.1"
 once_cell = "1.17"
 
-# Optional tokio runtime
+wgpu = "0.19"
+bytemuck = { version = "1.4", features = ["derive"] }
+image = "0.24"
+nalgebra = "0.32"
+
 tokio = { version = "1.36", features = ["rt-multi-thread", "sync", "macros", "time"], optional = true }
 
-# Optional UI Framework (feature-gated)
 eframe = { version = "0.26", optional = true }
 egui = { version = "0.26", optional = true }
 
-# Optional graphics and rendering (feature-gated)
-wgpu = { version = "0.19", optional = true }
-bytemuck = { version = "1.4", features = ["derive"], optional = true }
-image = { version = "0.24", optional = true }
-nalgebra = { version = "0.32", optional = true }
-
-# Optional WASM support (feature-gated)
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }  
 js-sys = { version = "0.3", optional = true }
@@ -85,7 +88,6 @@ web-sys = { version = "0.3", features = [
     "AbortSignal",
 ], optional = true }
 
-# Always available utilities
 reqwest = { version = "0.11", features = ["json"] }
 bincode = "1.3"
 geo = "0.26"
@@ -95,44 +97,19 @@ rstar = "0.11"
 crossbeam-channel = "0.5"
 fxhash = "0.2"
 
-# Optional debugging (feature-gated)
 log = { version = "0.4", optional = true }
 env_logger = { version = "0.10", optional = true }
 
-# Async utilities
 pollster = { version = "0.3", optional = true }
 
-# WASM-specific dependencies
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
 getrandom = { version = "0.2", features = ["js"] }
 
-# Remove pollster - we'll handle async properly
-# pollster = "0.3"  # REMOVED
-
 [lib]
 name = "maplet"
 path = "src/lib.rs"
-
-[[example]]
-name = "basic_map"
-path = "examples/basic_map.rs"
-required-features = ["app"]
-
-[[example]]
-name = "wasm_demo"
-path = "examples/wasm_demo.rs"
-required-features = ["wasm"]
-crate-type = ["cdylib"]
-
-[[example]]
-name = "headless"
-path = "examples/headless.rs"
-
-[[example]]
-name = "configuration_demo"
-path = "examples/configuration_demo.rs"
-required-features = ["app"]
+crate-type = ["cdylib", "rlib"]
 
 [workspace]
 members = ["maplet-app"]

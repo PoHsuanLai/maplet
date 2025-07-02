@@ -27,7 +27,6 @@ impl Default for OpenStreetMapSource {
 
 impl TileSource for OpenStreetMapSource {
     fn url(&self, coord: TileCoord) -> String {
-        // Guard against empty subdomain list (should not happen, but be safe)
         if self.subdomains.is_empty() {
             return format!(
                 "https://tile.openstreetmap.org/{}/{}/{}.png",

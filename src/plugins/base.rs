@@ -1,3 +1,4 @@
+
 use crate::{
     core::{map::Map, viewport::Viewport},
     input::events::InputEvent,
@@ -5,7 +6,6 @@ use crate::{
 };
 use async_trait::async_trait;
 
-#[cfg(feature = "render")]
 use crate::rendering::context::RenderContext;
 
 #[async_trait]
@@ -23,39 +23,7 @@ pub trait PluginTrait: Send + Sync {
     fn update(&mut self, _delta_time: f64) -> Result<()> {
         Ok(())
     }
-    #[cfg(feature = "render")]
     fn render(&mut self, _context: &mut RenderContext, _viewport: &Viewport) -> Result<()> {
         Ok(())
-    }
-
-    #[cfg(not(feature = "render"))]
-    fn render(&mut self, _context: &mut (), _viewport: &Viewport) -> Result<()> {
-        Ok(())
-    }
-}
-
-// Create all other module stubs
-use std::collections::HashMap;
-
-pub struct BasePlugin {
-    pub name: String,
-    pub enabled: bool,
-    pub options: HashMap<String, serde_json::Value>,
-}
-
-impl BasePlugin {
-    pub fn new(name: String) -> Self {
-        Self {
-            name,
-            enabled: true,
-            options: HashMap::new(),
-        }
-    }
-}
-
-#[async_trait]
-impl PluginTrait for BasePlugin {
-    fn name(&self) -> &str {
-        &self.name
     }
 }

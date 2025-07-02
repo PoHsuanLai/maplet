@@ -268,19 +268,7 @@ impl GeoJsonLayer {
     }
 
     fn coords_bounds(coordinates: &[[f64; 2]]) -> Option<LatLngBounds> {
-        if coordinates.is_empty() {
-            return None;
-        }
-
-        let first = LatLng::new(coordinates[0][1], coordinates[0][0]);
-        let mut bounds = LatLngBounds::new(first, first);
-
-        for coord in coordinates.iter().skip(1) {
-            let point = LatLng::new(coord[1], coord[0]);
-            bounds.extend(&point);
-        }
-
-        Some(bounds)
+        LatLngBounds::from_coordinates(coordinates)
     }
 
     /// Create a GeoJsonLayer from a parsed GeoJson object
@@ -770,30 +758,20 @@ impl StreamingGeoJsonProcessor {
 
     /// Calculate bounds for a chunk of features
     fn calculate_chunk_bounds(&self, features: &[GeoJsonFeature]) -> Option<LatLngBounds> {
-        let mut min_lat = f64::INFINITY;
-        let mut max_lat = f64::NEG_INFINITY;
-        let mut min_lng = f64::INFINITY;
-        let mut max_lng = f64::NEG_INFINITY;
-        let mut has_bounds = false;
+        let mut bounds: Option<LatLngBounds> = None;
 
         for feature in features {
-            if let Some(bounds) = feature.bounds() {
-                has_bounds = true;
-                min_lat = min_lat.min(bounds.south_west.lat);
-                max_lat = max_lat.max(bounds.north_east.lat);
-                min_lng = min_lng.min(bounds.south_west.lng);
-                max_lng = max_lng.max(bounds.north_east.lng);
+            if let Some(feature_bounds) = feature.bounds() {
+                if let Some(ref mut b) = bounds {
+                    b.extend(&feature_bounds.south_west);
+                    b.extend(&feature_bounds.north_east);
+                } else {
+                    bounds = Some(feature_bounds);
+                }
             }
         }
 
-        if has_bounds {
-            Some(LatLngBounds::new(
-                LatLng::new(min_lat, min_lng),
-                LatLng::new(max_lat, max_lng),
-            ))
-        } else {
-            None
-        }
+        bounds
     }
 
     /// Get all completed chunks

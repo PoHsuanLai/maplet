@@ -1,69 +1,57 @@
 use crate::{
+    core::{geo::LatLngBounds, viewport::Viewport},
     layers::base::{LayerProperties, LayerTrait, LayerType},
+    rendering::context::RenderContext,
     Result,
 };
 
 pub struct ImageLayer {
     properties: LayerProperties,
+    url: String,
+    bounds: LatLngBounds,
 }
 
 impl ImageLayer {
-    pub fn new(id: String) -> Self {
+    pub fn new(id: String, url: String, bounds: LatLngBounds) -> Self {
         let properties = LayerProperties::new(id, "Image Layer".to_string(), LayerType::Image);
-        Self { properties }
+        Self {
+            properties,
+            url,
+            bounds,
+        }
     }
 }
 
 impl LayerTrait for ImageLayer {
-    fn id(&self) -> &str {
-        &self.properties.id
-    }
-    fn name(&self) -> &str {
-        &self.properties.name
-    }
-    fn layer_type(&self) -> LayerType {
-        LayerType::Image
-    }
-    fn z_index(&self) -> i32 {
-        self.properties.z_index
-    }
-    fn set_z_index(&mut self, z_index: i32) {
-        self.properties.z_index = z_index;
-    }
-    fn opacity(&self) -> f32 {
-        self.properties.opacity
-    }
-    fn set_opacity(&mut self, opacity: f32) {
-        self.properties.opacity = opacity.clamp(0.0, 1.0);
-    }
-    fn visible(&self) -> bool {
-        self.properties.visible
-    }
-    fn set_visible(&mut self, visible: bool) {
-        self.properties.visible = visible;
-    }
-    fn options(&self) -> serde_json::Value {
-        self.properties.options.clone()
-    }
-    fn set_options(&mut self, options: serde_json::Value) -> Result<()> {
-        self.properties.options = options;
-        Ok(())
+    crate::impl_layer_trait!(ImageLayer, properties);
+
+    fn bounds(&self) -> Option<LatLngBounds> {
+        Some(self.bounds.clone())
     }
 
     fn render(
-        &self,
-        #[cfg(feature = "render")] _context: &mut crate::rendering::context::RenderContext,
-        #[cfg(not(feature = "render"))] _context: &mut (),
-        _viewport: &crate::core::viewport::Viewport,
+        &mut self,
+        _context: &mut RenderContext,
+        _viewport: &Viewport,
     ) -> Result<()> {
+        // TODO: Implement image rendering
         Ok(())
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn options(&self) -> serde_json::Value {
+        serde_json::json!({
+            "url": self.url,
+            "bounds": {
+                "south": self.bounds.south_west.lat,
+                "west": self.bounds.south_west.lng,
+                "north": self.bounds.north_east.lat,
+                "east": self.bounds.north_east.lng
+            }
+        })
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
+    fn set_options(&mut self, _options: serde_json::Value) -> Result<()> {
+        // TODO: Implement option setting
+        Ok(())
     }
 }

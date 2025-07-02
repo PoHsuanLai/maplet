@@ -5,6 +5,7 @@
 
 use crate::background::tasks::{BackgroundTask, TaskPriority};
 use crate::core::bounds::Bounds;
+use crate::prelude::HashMap;
 use crate::spatial::{
     clustering::{Cluster, ClusteringConfig},
     index::SpatialItem,
@@ -177,8 +178,6 @@ fn cluster_items<T: Clone>(
     zoom_level: f64,
     config: ClusteringConfig,
 ) -> Vec<Cluster<T>> {
-    use std::collections::HashMap;
-
     // If zoom level is high enough, disable clustering
     if zoom_level >= config.disable_clustering_at_zoom {
         return items
@@ -195,7 +194,7 @@ fn cluster_items<T: Clone>(
         .collect();
 
     // Use grid-based clustering for performance
-    let mut grid: HashMap<(i32, i32), Vec<SpatialItem<T>>> = HashMap::new();
+    let mut grid: HashMap<(i32, i32), Vec<SpatialItem<T>>> = HashMap::default();
     let grid_size = config.grid_size;
 
     // Group items by grid cell

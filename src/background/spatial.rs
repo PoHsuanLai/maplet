@@ -35,13 +35,11 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BuildSpatialIndexTask<
             let items = self.items.clone();
 
             #[cfg(feature = "tokio-runtime")]
-            let result = tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || -> crate::Result<SpatialIndex<T>> {
                 let mut index = SpatialIndex::new();
 
                 for item in items {
-                    if let Err(e) = index.insert(item) {
-                        return Err(e);
-                    }
+                    index.insert(item)?
                 }
 
                 Ok(index)
@@ -54,9 +52,7 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BuildSpatialIndexTask<
                 let mut index = SpatialIndex::new();
 
                 for item in items {
-                    if let Err(e) = index.insert(item) {
-                        return Err(e);
-                    }
+                    index.insert(item)?;
                 }
 
                 Ok(index)

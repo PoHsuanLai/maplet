@@ -1,11 +1,14 @@
-use crate::core::geo::Point;
+use crate::core::geo::{LatLng, Point};
 use serde::{Deserialize, Serialize};
 
 /// Input events that can be handled by the map and layers
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum InputEvent {
     /// Single click/tap
-    Click { position: Point },
+    Click {
+        position: Point,
+        button: MouseButton,
+    },
     /// Double click/tap
     DoubleClick { position: Point },
     /// Mouse/finger move
@@ -79,11 +82,65 @@ pub struct KeyModifiers {
     pub meta: bool,
 }
 
+/// Priority levels for input events
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EventPriority {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+    Critical = 3,
+}
+
+/// Whether an event was handled
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EventHandled {
+    Handled,
+    NotHandled,
+}
+
+/// Map event types that can be emitted by the map
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapEvent {
+    /// Map view has changed (center, zoom, or size)
+    ViewChanged { center: LatLng, zoom: f64 },
+    /// Mouse/touch click on the map
+    Click { lat_lng: LatLng, pixel: Point },
+    /// Mouse/touch move over the map
+    MouseMove { lat_lng: LatLng, pixel: Point },
+    /// Zoom started
+    ZoomStart { zoom: f64 },
+    /// Zoom ended
+    ZoomEnd { zoom: f64 },
+    /// Pan started
+    MoveStart { center: LatLng },
+    /// Pan ended
+    MoveEnd { center: LatLng },
+    /// Layer was added to the map
+    LayerAdd { layer_id: String },
+    /// Layer was removed from the map  
+    LayerRemove { layer_id: String },
+    /// Base layer was changed
+    BaseLayerChange { layer_id: String },
+    /// Overlay layer was added
+    OverlayAdd { layer_id: String },
+    /// Overlay layer was removed
+    OverlayRemove { layer_id: String },
+}
+
+/// Mouse button types
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+    Other(u16),
+}
+
 impl InputEvent {
     /// Gets the primary position associated with this event, if any
     pub fn position(&self) -> Option<Point> {
         match self {
-            InputEvent::Click { position } => Some(*position),
+            InputEvent::Click { position, .. } => Some(*position),
             InputEvent::DoubleClick { position } => Some(*position),
             InputEvent::MouseMove { position } => Some(*position),
             InputEvent::DragStart { position } => Some(*position),
@@ -118,24 +175,20 @@ impl InputEvent {
     }
 }
 
-/// Event priority levels for handling
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum EventPriority {
-    Low = 0,
-    Normal = 1,
-    High = 2,
-    Critical = 3,
-}
-
-/// Event handling result
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventHandled {
-    /// Event was not handled, continue propagation
-    NotHandled,
-    /// Event was handled, continue propagation
-    Handled,
-    /// Event was handled, stop propagation
-    HandledStopPropagation,
+// Event conversion utilities
+impl From<MapEvent> for InputEvent {
+    fn from(map_event: MapEvent) -> Self {
+        match map_event {
+            MapEvent::Click { pixel, .. } => InputEvent::Click {
+                position: pixel,
+                button: MouseButton::Left,
+            },
+            MapEvent::MouseMove { pixel, .. } => InputEvent::MouseMove { position: pixel },
+            _ => InputEvent::MouseMove {
+                position: Point::new(0.0, 0.0),
+            }, // Fallback
+        }
+    }
 }
 
 #[cfg(test)]
@@ -146,26 +199,28 @@ mod tests {
     fn test_input_event_position() {
         let click = InputEvent::Click {
             position: Point::new(100.0, 200.0),
+            button: MouseButton::Left,
         };
         assert_eq!(click.position(), Some(Point::new(100.0, 200.0)));
 
-        let resize = InputEvent::Resize {
-            size: Point::new(800.0, 600.0),
+        let move_event = InputEvent::MouseMove {
+            position: Point::new(50.0, 75.0),
         };
-        assert_eq!(resize.position(), None);
+        assert_eq!(move_event.position(), Some(Point::new(50.0, 75.0)));
     }
 
     #[test]
     fn test_event_type_checks() {
         let click = InputEvent::Click {
             position: Point::new(0.0, 0.0),
+            button: MouseButton::Left,
         };
         assert!(click.is_pointer_event());
         assert!(!click.is_touch_event());
         assert!(!click.is_keyboard_event());
 
         let key_press = InputEvent::KeyPress {
-            key: KeyCode::Enter,
+            key: KeyCode::Space,
             modifiers: KeyModifiers::default(),
         };
         assert!(!key_press.is_pointer_event());
@@ -175,13 +230,15 @@ mod tests {
 
     #[test]
     fn test_key_modifiers() {
-        let mut modifiers = KeyModifiers::default();
-        assert!(!modifiers.shift);
-        assert!(!modifiers.ctrl);
-
-        modifiers.shift = true;
-        modifiers.ctrl = true;
+        let modifiers = KeyModifiers {
+            shift: true,
+            ctrl: false,
+            alt: true,
+            meta: false,
+        };
         assert!(modifiers.shift);
-        assert!(modifiers.ctrl);
+        assert!(!modifiers.ctrl);
+        assert!(modifiers.alt);
+        assert!(!modifiers.meta);
     }
 }

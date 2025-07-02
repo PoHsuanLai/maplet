@@ -87,6 +87,13 @@ impl Point {
         Self { x, y }
     }
 
+    pub fn scale(&self, factor: f64) -> Self {
+        Self {
+            x: self.x * factor,
+            y: self.y * factor,
+        }
+    }
+
     pub fn add(&self, other: &Point) -> Point {
         Point::new(self.x + other.x, self.y + other.y)
     }
@@ -134,6 +141,39 @@ impl LatLngBounds {
     /// Creates bounds from individual coordinates
     pub fn from_coords(south: f64, west: f64, north: f64, east: f64) -> Self {
         Self::new(LatLng::new(south, west), LatLng::new(north, east))
+    }
+
+    /// Calculates bounds from a collection of LatLng points
+    pub fn from_points(points: &[LatLng]) -> Option<LatLngBounds> {
+        if points.is_empty() {
+            return None;
+        }
+
+        let first = points[0];
+        let mut bounds = LatLngBounds::new(first, first);
+
+        for point in points.iter().skip(1) {
+            bounds.extend(point);
+        }
+
+        Some(bounds)
+    }
+
+    /// Calculates bounds from coordinate pairs [lng, lat]
+    pub fn from_coordinates(coordinates: &[[f64; 2]]) -> Option<LatLngBounds> {
+        if coordinates.is_empty() {
+            return None;
+        }
+
+        let first = LatLng::new(coordinates[0][1], coordinates[0][0]);
+        let mut bounds = LatLngBounds::new(first, first);
+
+        for coord in coordinates.iter().skip(1) {
+            let point = LatLng::new(coord[1], coord[0]);
+            bounds.extend(&point);
+        }
+
+        Some(bounds)
     }
 
     /// Checks if the bounds contain a point

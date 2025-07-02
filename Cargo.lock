@@ -2398,7 +2398,6 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
- "fxhash",
  "maplet",
  "tokio",
 ]

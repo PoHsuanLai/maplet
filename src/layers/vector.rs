@@ -7,14 +7,13 @@ use crate::{
     Result,
 };
 
-#[cfg(feature = "render")]
 use crate::rendering::context::RenderContext;
 
 #[cfg(feature = "egui")]
 use egui::Color32;
 
+use crate::prelude::HashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Serializable color type that can convert to/from egui::Color32
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -221,32 +220,12 @@ impl VectorFeature {
     }
 
     fn bounds_from_points(points: &[LatLng]) -> LatLngBounds {
-        if points.is_empty() {
-            return LatLngBounds::new(LatLng::new(0.0, 0.0), LatLng::new(0.0, 0.0));
-        }
-
-        let mut min_lat = points[0].lat;
-        let mut max_lat = points[0].lat;
-        let mut min_lng = points[0].lng;
-        let mut max_lng = points[0].lng;
-
-        for point in points.iter().skip(1) {
-            min_lat = min_lat.min(point.lat);
-            max_lat = max_lat.max(point.lat);
-            min_lng = min_lng.min(point.lng);
-            max_lng = max_lng.max(point.lng);
-        }
-
-        LatLngBounds::new(LatLng::new(min_lat, min_lng), LatLng::new(max_lat, max_lng))
+        LatLngBounds::from_points(points)
+            .unwrap_or_else(|| LatLngBounds::new(LatLng::new(0.0, 0.0), LatLng::new(0.0, 0.0)))
     }
 
     fn union_bounds(bounds1: &LatLngBounds, bounds2: &LatLngBounds) -> LatLngBounds {
-        let south = bounds1.south_west.lat.min(bounds2.south_west.lat);
-        let west = bounds1.south_west.lng.min(bounds2.south_west.lng);
-        let north = bounds1.north_east.lat.max(bounds2.north_east.lat);
-        let east = bounds1.north_east.lng.max(bounds2.north_east.lng);
-
-        LatLngBounds::new(LatLng::new(south, west), LatLng::new(north, east))
+        bounds1.union(bounds2)
     }
 
     /// Check if this feature intersects with the given bounds
@@ -295,7 +274,7 @@ impl VectorFeatureData {
         Self {
             id,
             feature,
-            properties: HashMap::new(),
+            properties: HashMap::default(),
             selected: false,
             highlighted: false,
             visible: true,
@@ -348,7 +327,7 @@ impl VectorLayer {
 
         Self {
             properties,
-            features: HashMap::new(),
+            features: HashMap::default(),
             default_point_style: PointStyle::default(),
             default_line_style: LineStyle::default(),
             default_polygon_style: PolygonStyle::default(),
@@ -579,7 +558,6 @@ impl VectorLayer {
         viewport: &Viewport,
         feature_data: &VectorFeatureData,
     ) -> Result<()> {
-        #[cfg(feature = "render")]
         use crate::rendering::context::{LineRenderStyle, PointRenderStyle, PolygonRenderStyle};
 
         let opacity_multiplier = self.opacity();
@@ -694,69 +672,27 @@ impl VectorLayer {
     }
 }
 
+
 impl LayerTrait for VectorLayer {
-    fn id(&self) -> &str {
-        &self.properties.id
-    }
-
-    fn name(&self) -> &str {
-        &self.properties.name
-    }
-
-    fn layer_type(&self) -> LayerType {
-        LayerType::Vector
-    }
-
-    fn z_index(&self) -> i32 {
-        self.properties.z_index
-    }
-
-    fn set_z_index(&mut self, z_index: i32) {
-        self.properties.z_index = z_index;
-    }
-
-    fn opacity(&self) -> f32 {
-        self.properties.opacity
-    }
-
-    fn set_opacity(&mut self, opacity: f32) {
-        self.properties.opacity = opacity.clamp(0.0, 1.0);
-    }
-
-    fn visible(&self) -> bool {
-        self.properties.visible
-    }
-
-    fn set_visible(&mut self, visible: bool) {
-        self.properties.visible = visible;
-    }
+    crate::impl_layer_trait!(VectorLayer, properties);
 
     fn bounds(&self) -> Option<LatLngBounds> {
-        if self.features.is_empty() {
-            return None;
-        }
-
-        let mut bounds: Option<LatLngBounds> = None;
-        for feature in self.features.values() {
-            let feature_bounds = feature.feature.bounds();
-            bounds = Some(match bounds {
-                Some(b) => b.union(&feature_bounds),
-                None => feature_bounds,
-            });
-        }
-        bounds
+        self.get_layer_bounds()
     }
 
-    fn render(&self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
         if !self.visible() {
             return Ok(());
         }
 
-        let viewport_bounds = viewport.bounds();
-        let visible_features = self.features_in_bounds(&viewport_bounds);
+        // Update feature visibility based on viewport
+        let _ = futures::executor::block_on(self.update_features(viewport));
 
-        for feature_data in visible_features {
-            self.render_feature(context, viewport, feature_data)?;
+        // Render visible features
+        for feature_data in self.features.values() {
+            if feature_data.visible {
+                self.render_feature(context, viewport, feature_data)?;
+            }
         }
 
         Ok(())
@@ -765,28 +701,15 @@ impl LayerTrait for VectorLayer {
     fn options(&self) -> serde_json::Value {
         serde_json::json!({
             "selectable": self.selectable,
-            "feature_count": self.features.len(),
-            "selected_count": self.selected_features.len(),
+            "feature_count": self.features.len()
         })
     }
 
-    fn set_options(&mut self, options: serde_json::Value) -> Result<()> {
-        if let Some(selectable) = options.get("selectable").and_then(|v| v.as_bool()) {
-            self.selectable = selectable;
-        }
+    fn set_options(&mut self, _options: serde_json::Value) -> Result<()> {
+        // TODO: Implement option setting for vector layer
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
-
-#[cfg(test)]
 mod tests {
     use super::*;
 

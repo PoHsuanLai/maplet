@@ -1,6 +1,8 @@
+pub mod animation;
 pub mod base;
 pub mod canvas;
 pub mod image;
+pub mod macros;
 pub mod manager;
 pub mod marker;
 pub mod tile;

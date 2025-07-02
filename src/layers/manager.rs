@@ -1,6 +1,5 @@
 use crate::{core::viewport::Viewport, layers::base::LayerTrait, Result};
 
-#[cfg(feature = "render")]
 use crate::rendering::context::RenderContext;
 
 use crate::prelude::HashMap;
@@ -101,11 +100,11 @@ impl LayerManager {
     }
 
     /// Renders all layers in order
-    pub async fn render(&self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
+    pub async fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
         let viewport_bounds = viewport.bounds();
 
-        for layer_id in &self.render_order {
-            if let Some(layer) = self.layers.get(layer_id) {
+        for layer_id in self.render_order.clone() {
+            if let Some(layer) = self.layers.get_mut(&layer_id) {
                 // Only render visible layers that intersect with viewport
                 if layer.visible() && layer.intersects_bounds(&viewport_bounds) {
                     layer.render(context, viewport)?;
