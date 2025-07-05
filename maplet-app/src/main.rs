@@ -80,6 +80,25 @@ impl MapletApp {
             if ui.button("🗼 Tokyo").clicked() {
                 println!("🗼 [DEBUG] Tokyo location selected");
                 self.selected_location = (35.6762, 139.6503);
+                
+                // Debug: Calculate expected tile coordinates for Tokyo
+                let lat = 35.6762;
+                let lng = 139.6503;
+                let zoom = 12.0;
+                println!("🗼 [DEBUG] Tokyo coordinates: lat={:.4}, lng={:.4}", lat, lng);
+                
+                // Create a temporary viewport to test projection
+                let viewport = maplet::core::viewport::Viewport::new(
+                    maplet::core::geo::LatLng::new(lat, lng),
+                    zoom,
+                    maplet::core::geo::Point::new(800.0, 600.0)
+                );
+                let projected = viewport.project(&maplet::core::geo::LatLng::new(lat, lng), Some(zoom));
+                let tile_x = (projected.x / 256.0).floor() as u32;
+                let tile_y = (projected.y / 256.0).floor() as u32;
+                println!("🗼 [DEBUG] Tokyo projected to x={:.2}, y={:.2}", projected.x, projected.y);
+                println!("🗼 [DEBUG] Tokyo tile coordinates: ({}, {}) at zoom {}", tile_x, tile_y, zoom as u8);
+                println!("🗼 [DEBUG] Expected tile URL: https://a.tile.openstreetmap.org/{}/{}/{}.png", zoom as u8, tile_x, tile_y);
             }
             if ui.button("🦘 Sydney").clicked() {
                 println!("🦘 [DEBUG] Sydney location selected");
@@ -178,6 +197,23 @@ impl eframe::App for MapletApp {
                 ui.horizontal(|ui| {
                     if ui.button("🗼 Tokyo").clicked() {
                         self.selected_location = (35.6762, 139.6503);
+                        
+                        // Debug: Calculate expected tile coordinates for Tokyo
+                        let lat = 35.6762;
+                        let lng = 139.6503;
+                        let zoom = 12.0;
+                        println!("🗼 [DEBUG] Tokyo location selected (panel): lat={:.4}, lng={:.4}", lat, lng);
+                        
+                        // Create a temporary viewport to test projection
+                        let viewport = maplet::core::viewport::Viewport::new(
+                            maplet::core::geo::LatLng::new(lat, lng),
+                            zoom,
+                            maplet::core::geo::Point::new(800.0, 600.0)
+                        );
+                        let projected = viewport.project(&maplet::core::geo::LatLng::new(lat, lng), Some(zoom));
+                        let tile_x = (projected.x / 256.0).floor() as u32;
+                        let tile_y = (projected.y / 256.0).floor() as u32;
+                        println!("🗼 [DEBUG] Tokyo tile coordinates (panel): ({}, {}) at zoom {}", tile_x, tile_y, zoom as u8);
                     }
                     if ui.button("🗽 New York").clicked() {
                         self.selected_location = (40.7128, -74.0060);
