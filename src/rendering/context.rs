@@ -1,6 +1,11 @@
 use crate::{core::geo::Point, Result};
 use egui::Color32;
 
+/// Unified style conversion trait to eliminate duplicate conversion patterns
+pub trait StyleConversion<T> {
+    fn to_render_style(&self, opacity_multiplier: f32) -> T;
+}
+
 /// Styles for different rendering primitives
 #[derive(Debug, Clone)]
 pub struct PointRenderStyle {
@@ -28,12 +33,52 @@ pub struct PolygonRenderStyle {
     pub stroke_opacity: f32,
 }
 
+// Implement unified style conversion for vector layer styles
+impl StyleConversion<PointRenderStyle> for crate::layers::vector::PointStyle {
+    fn to_render_style(&self, opacity_multiplier: f32) -> PointRenderStyle {
+        PointRenderStyle {
+            fill_color: self.fill_color.into(),
+            stroke_color: self.stroke_color.into(),
+            stroke_width: self.stroke_width,
+            radius: self.radius,
+            opacity: self.opacity * opacity_multiplier,
+        }
+    }
+}
+
+impl StyleConversion<LineRenderStyle> for crate::layers::vector::LineStyle {
+    fn to_render_style(&self, opacity_multiplier: f32) -> LineRenderStyle {
+        LineRenderStyle {
+            color: self.color.into(),
+            width: self.width,
+            opacity: self.opacity * opacity_multiplier,
+            dash_pattern: self.dash_pattern.clone(),
+        }
+    }
+}
+
+impl StyleConversion<PolygonRenderStyle> for crate::layers::vector::PolygonStyle {
+    fn to_render_style(&self, opacity_multiplier: f32) -> PolygonRenderStyle {
+        PolygonRenderStyle {
+            fill_color: self.fill_color.into(),
+            stroke_color: self.stroke_color.into(),
+            stroke_width: self.stroke_width,
+            fill_opacity: self.fill_opacity * opacity_multiplier,
+            stroke_opacity: self.stroke_opacity * opacity_multiplier,
+        }
+    }
+}
+
 /// Simplified rendering context for basic functionality
 pub struct RenderContext {
     pub width: u32,
     pub height: u32,
     /// Drawing primitives queue (for now just stored, actual rendering would happen elsewhere)
     pub drawing_queue: Vec<DrawCommand>,
+    /// Viewport clipping bounds (min, max) in screen coordinates
+    pub clip_bounds: Option<(Point, Point)>,
+    /// Whether clipping is enabled
+    pub clipping_enabled: bool,
 }
 
 /// Commands that can be issued to the render context
@@ -72,6 +117,8 @@ impl RenderContext {
             width,
             height,
             drawing_queue: Vec::new(),
+            clip_bounds: None,
+            clipping_enabled: false,
         })
     }
 
@@ -122,72 +169,37 @@ impl RenderContext {
     /// Render a tile to the screen with proper error handling and validation
     pub fn render_tile(
         &mut self,
-        tile_data: &[u8],
-        screen_bounds: (Point, Point),
+        data: &[u8],
+        bounds: (Point, Point),
         opacity: f32,
     ) -> Result<()> {
-        // Validate tile data before processing
-        if tile_data.is_empty() {
-            log::warn!("Empty tile data, skipping render");
-            return Ok(());
+        // Validate bounds
+        if bounds.0.x >= bounds.1.x || bounds.0.y >= bounds.1.y {
+            return Err("Invalid tile bounds".into());
         }
 
-        // Check for minimum reasonable tile size (allow small valid images)
-        if tile_data.len() < 20 {
-            log::warn!(
-                "Suspiciously small tile data ({} bytes), skipping render",
-                tile_data.len()
-            );
-            return Ok(());
+        // Validate opacity
+        if !(0.0..=1.0).contains(&opacity) {
+            return Err("Opacity must be between 0.0 and 1.0".into());
         }
 
-        // Validate image format by checking headers
-        if !self.is_valid_image_format(tile_data) {
-            log::warn!("Invalid or corrupted image format, skipping render");
-            return Ok(());
-        }
+        // Apply clipping if enabled
+        let final_bounds = if self.clipping_enabled {
+            self.clip_bounds_to_viewport(bounds)
+        } else {
+            Some(bounds)
+        };
 
-        // Add tile to drawing queue directly - validation is sufficient
-        // The actual image decoding will happen in the UI thread
+        if let Some(clipped_bounds) = final_bounds {
+        // For now, just queue the tile for rendering
         self.drawing_queue.push(DrawCommand::Tile {
-            data: tile_data.to_vec(),
-            bounds: screen_bounds,
+            data: data.to_vec(),
+                bounds: clipped_bounds,
             opacity,
         });
-
+        }
+        // If clipped_bounds is None, the tile is completely outside viewport and shouldn't be rendered
         Ok(())
-    }
-
-    /// Validate image format by checking magic bytes
-    fn is_valid_image_format(&self, data: &[u8]) -> bool {
-        if data.len() < 8 {
-            return false;
-        }
-
-        // Check for PNG signature
-        if data.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
-            return true;
-        }
-
-        // Check for JPEG signature
-        if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
-            return true;
-        }
-
-        // Check for WebP signature
-        if data.len() >= 12
-            && data[0..4] == [0x52, 0x49, 0x46, 0x46]
-            && data[8..12] == [0x57, 0x45, 0x42, 0x50]
-        {
-            return true;
-        }
-
-        // Check for GIF signature
-        if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
-            return true;
-        }
-
-        false
     }
 
     /// Render a tile that already has a texture registered in egui
@@ -197,12 +209,66 @@ impl RenderContext {
         bounds: (Point, Point),
         opacity: f32,
     ) -> Result<()> {
+        // Apply clipping if enabled
+        let final_bounds = if self.clipping_enabled {
+            self.clip_bounds_to_viewport(bounds)
+        } else {
+            Some(bounds)
+        };
+
+        if let Some(clipped_bounds) = final_bounds {
         self.drawing_queue.push(DrawCommand::TileTextured {
             texture_id,
-            bounds,
+                bounds: clipped_bounds,
             opacity,
         });
+        }
+        // If clipped_bounds is None, the tile is completely outside viewport and shouldn't be rendered
         Ok(())
+    }
+
+    /// Set viewport clipping bounds (like Leaflet's clip rectangle)
+    pub fn set_clip_bounds(&mut self, min: Point, max: Point) {
+        self.clip_bounds = Some((min, max));
+        self.clipping_enabled = true;
+    }
+
+    /// Enable or disable clipping
+    pub fn set_clipping_enabled(&mut self, enabled: bool) {
+        self.clipping_enabled = enabled;
+    }
+
+    /// Clear clipping bounds
+    pub fn clear_clip_bounds(&mut self) {
+        self.clip_bounds = None;
+        self.clipping_enabled = false;
+    }
+
+    /// Clip bounds to viewport (returns None if completely outside)
+    fn clip_bounds_to_viewport(&self, bounds: (Point, Point)) -> Option<(Point, Point)> {
+        if let Some((clip_min, clip_max)) = self.clip_bounds {
+            let (tile_min, tile_max) = bounds;
+            
+            // Check if tile is completely outside clipping area
+            if tile_max.x < clip_min.x || tile_min.x > clip_max.x ||
+               tile_max.y < clip_min.y || tile_min.y > clip_max.y {
+                return None; // Completely outside, don't render
+            }
+            
+            // Clip the bounds to the viewport
+            let clipped_min = Point::new(
+                tile_min.x.max(clip_min.x),
+                tile_min.y.max(clip_min.y),
+            );
+            let clipped_max = Point::new(
+                tile_max.x.min(clip_max.x),
+                tile_max.y.min(clip_max.y),
+            );
+            
+            Some((clipped_min, clipped_max))
+        } else {
+            Some(bounds) // No clipping bounds set
+        }
     }
 
     /// Clear the drawing queue

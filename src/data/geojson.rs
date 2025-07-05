@@ -2,10 +2,11 @@ use crate::core::bounds::Bounds;
 use crate::core::geo::{LatLng, LatLngBounds};
 use crate::prelude::HashMap;
 use crate::spatial::index::{SpatialIndex, SpatialItem};
+use crate::traits::GeometryOps;
 use crate::Result;
 use serde::{Deserialize, Serialize};
+use crate::prelude::Arc;
 use std::io::{BufRead, BufReader, Read};
-use std::sync::Arc;
 
 /// GeoJSON feature types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,8 +184,8 @@ impl GeoJsonLayer {
             if let Some(geometry) = &feature.geometry {
                 if let Some(geom_bounds) = Self::geometry_bounds(geometry) {
                     if let Some(ref mut b) = bounds {
-                        b.extend(&geom_bounds.south_west);
-                        b.extend(&geom_bounds.north_east);
+                        b.extend_with_point(&geom_bounds.south_west);
+                        b.extend_with_point(&geom_bounds.north_east);
                     } else {
                         bounds = Some(geom_bounds);
                     }
@@ -225,21 +226,26 @@ impl GeoJsonLayer {
                 let point = LatLng::new(coordinates[1], coordinates[0]);
                 Some(LatLngBounds::new(point, point))
             }
-            GeoJsonGeometry::LineString { coordinates } => Self::coords_bounds(coordinates),
+            GeoJsonGeometry::LineString { coordinates } => {
+                // Use unified bounds calculation from LatLngBounds
+                LatLngBounds::from_coordinates(coordinates)
+            }
             GeoJsonGeometry::Polygon { coordinates } => {
                 if let Some(exterior) = coordinates.first() {
-                    Self::coords_bounds(exterior)
+                    LatLngBounds::from_coordinates(exterior)
                 } else {
                     None
                 }
             }
-            GeoJsonGeometry::MultiPoint { coordinates } => Self::coords_bounds(coordinates),
+            GeoJsonGeometry::MultiPoint { coordinates } => {
+                LatLngBounds::from_coordinates(coordinates)
+            }
             GeoJsonGeometry::MultiLineString { coordinates } => {
                 let mut all_coords = Vec::new();
                 for line in coordinates {
                     all_coords.extend(line);
                 }
-                Self::coords_bounds(&all_coords)
+                LatLngBounds::from_coordinates(&all_coords)
             }
             GeoJsonGeometry::MultiPolygon { coordinates } => {
                 let mut all_coords = Vec::new();
@@ -248,15 +254,15 @@ impl GeoJsonLayer {
                         all_coords.extend(exterior);
                     }
                 }
-                Self::coords_bounds(&all_coords)
+                LatLngBounds::from_coordinates(&all_coords)
             }
             GeoJsonGeometry::GeometryCollection { geometries } => {
                 let mut bounds: Option<LatLngBounds> = None;
                 for geom in geometries {
                     if let Some(geom_bounds) = Self::geometry_bounds(geom) {
                         if let Some(ref mut b) = bounds {
-                            b.extend(&geom_bounds.south_west);
-                            b.extend(&geom_bounds.north_east);
+                                                    b.extend_with_point(&geom_bounds.south_west);
+                        b.extend_with_point(&geom_bounds.north_east);
                         } else {
                             bounds = Some(geom_bounds);
                         }
@@ -267,9 +273,7 @@ impl GeoJsonLayer {
         }
     }
 
-    fn coords_bounds(coordinates: &[[f64; 2]]) -> Option<LatLngBounds> {
-        LatLngBounds::from_coordinates(coordinates)
-    }
+
 
     /// Create a GeoJsonLayer from a parsed GeoJson object
     pub fn from_geojson(data: GeoJson) -> Self {
@@ -763,8 +767,8 @@ impl StreamingGeoJsonProcessor {
         for feature in features {
             if let Some(feature_bounds) = feature.bounds() {
                 if let Some(ref mut b) = bounds {
-                    b.extend(&feature_bounds.south_west);
-                    b.extend(&feature_bounds.north_east);
+                    b.extend_with_point(&feature_bounds.south_west);
+                    b.extend_with_point(&feature_bounds.north_east);
                 } else {
                     bounds = Some(feature_bounds);
                 }
@@ -792,7 +796,7 @@ impl StreamingGeoJsonProcessor {
                 chunk
                     .bounds
                     .as_ref()
-                    .map(|cb| cb.intersects(bounds))
+                    .map(|cb| cb.intersects_bounds(bounds))
                     .unwrap_or(false)
             })
             .collect()
@@ -818,7 +822,7 @@ impl StreamingGeoJsonProcessor {
                 // Fallback to linear search
                 for feature in &chunk.features {
                     if let Some(feature_bounds) = feature.bounds() {
-                        if feature_bounds.intersects(bounds) {
+                        if feature_bounds.intersects_bounds(bounds) {
                             features.push(feature);
                         }
                     }

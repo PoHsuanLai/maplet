@@ -1,8 +1,6 @@
 use crate::{
-    core::{geo::LatLngBounds, viewport::Viewport},
+    core::geo::LatLngBounds,
     layers::base::{LayerProperties, LayerTrait, LayerType},
-    rendering::context::RenderContext,
-    Result,
 };
 
 pub struct ImageLayer {
@@ -29,14 +27,7 @@ impl LayerTrait for ImageLayer {
         Some(self.bounds.clone())
     }
 
-    fn render(
-        &mut self,
-        _context: &mut RenderContext,
-        _viewport: &Viewport,
-    ) -> Result<()> {
-        // TODO: Implement image rendering
-        Ok(())
-    }
+    crate::impl_todo_render!();
 
     fn options(&self) -> serde_json::Value {
         serde_json::json!({
@@ -50,8 +41,5 @@ impl LayerTrait for ImageLayer {
         })
     }
 
-    fn set_options(&mut self, _options: serde_json::Value) -> Result<()> {
-        // TODO: Implement option setting
-        Ok(())
-    }
+    crate::impl_todo_options_setting!();
 }

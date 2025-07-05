@@ -15,7 +15,6 @@ use egui::Color32;
 
 use serde::{Deserialize, Serialize};
 
-/// Serializable color type that can convert to/from egui::Color32
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SerializableColor {
     pub r: u8,
@@ -173,64 +172,61 @@ pub enum VectorFeature {
 impl VectorFeature {
     /// Get the bounding box of this feature
     pub fn bounds(&self) -> LatLngBounds {
+        
         match self {
             VectorFeature::Point { position, .. } => LatLngBounds::new(*position, *position),
-            VectorFeature::LineString { points, .. } => Self::bounds_from_points(points),
+            VectorFeature::LineString { points, .. } => {
+                LatLngBounds::from_points(points).unwrap_or_default()
+            }
             VectorFeature::Polygon {
                 exterior, holes, ..
             } => {
-                let mut bounds = Self::bounds_from_points(exterior);
+                let mut bounds = LatLngBounds::from_points(exterior).unwrap_or_default();
                 for hole in holes {
-                    bounds = Self::union_bounds(&bounds, &Self::bounds_from_points(hole));
+                    if let Some(hole_bounds) = LatLngBounds::from_points(hole) {
+                        bounds = bounds.union(&hole_bounds);
+                    }
                 }
                 bounds
             }
-            VectorFeature::MultiPoint { points, .. } => Self::bounds_from_points(points),
+            VectorFeature::MultiPoint { points, .. } => {
+                LatLngBounds::from_points(points).unwrap_or_default()
+            }
             VectorFeature::MultiLineString { lines, .. } => {
                 let mut bounds: Option<LatLngBounds> = None;
                 for line in lines {
-                    let line_bounds = Self::bounds_from_points(line);
-                    bounds = Some(match bounds {
-                        Some(b) => b.union(&line_bounds),
-                        None => line_bounds,
-                    });
+                    if let Some(line_bounds) = LatLngBounds::from_points(line) {
+                        bounds = Some(match bounds {
+                            Some(b) => b.union(&line_bounds),
+                            None => line_bounds,
+                        });
+                    }
                 }
-                bounds.unwrap_or_else(|| {
-                    LatLngBounds::new(LatLng::new(0.0, 0.0), LatLng::new(0.0, 0.0))
-                })
+                bounds.unwrap_or_default()
             }
             VectorFeature::MultiPolygon { polygons, .. } => {
                 let mut bounds: Option<LatLngBounds> = None;
                 for (exterior, holes) in polygons {
-                    let mut poly_bounds = Self::bounds_from_points(exterior);
+                    let mut poly_bounds = LatLngBounds::from_points(exterior).unwrap_or_default();
                     for hole in holes {
-                        poly_bounds =
-                            Self::union_bounds(&poly_bounds, &Self::bounds_from_points(hole));
+                        if let Some(hole_bounds) = LatLngBounds::from_points(hole) {
+                            poly_bounds = poly_bounds.union(&hole_bounds);
+                        }
                     }
                     bounds = Some(match bounds {
                         Some(b) => b.union(&poly_bounds),
                         None => poly_bounds,
                     });
                 }
-                bounds.unwrap_or_else(|| {
-                    LatLngBounds::new(LatLng::new(0.0, 0.0), LatLng::new(0.0, 0.0))
-                })
+                bounds.unwrap_or_default()
             }
         }
     }
 
-    fn bounds_from_points(points: &[LatLng]) -> LatLngBounds {
-        LatLngBounds::from_points(points)
-            .unwrap_or_else(|| LatLngBounds::new(LatLng::new(0.0, 0.0), LatLng::new(0.0, 0.0)))
-    }
-
-    fn union_bounds(bounds1: &LatLngBounds, bounds2: &LatLngBounds) -> LatLngBounds {
-        bounds1.union(bounds2)
-    }
-
-    /// Check if this feature intersects with the given bounds
+    /// Check if this feature intersects with the given bounds using unified geometry operations
     pub fn intersects_bounds(&self, bounds: &LatLngBounds) -> bool {
-        self.bounds().intersects(bounds)
+        use crate::traits::GeometryOps;
+        self.bounds().intersects_bounds(bounds)
     }
 }
 
@@ -570,7 +566,7 @@ impl VectorLayer {
         viewport: &Viewport,
         feature_data: &VectorFeatureData,
     ) -> Result<()> {
-        use crate::rendering::context::{LineRenderStyle, PointRenderStyle, PolygonRenderStyle};
+        use crate::rendering::context::StyleConversion;
 
         let opacity_multiplier = self.opacity();
         let effective_style = self.get_effective_style(feature_data);
@@ -579,13 +575,7 @@ impl VectorLayer {
             VectorFeature::Point { position, .. } => {
                 let screen_pos = viewport.lat_lng_to_pixel(position);
                 if let VectorFeatureStyle::Point(style) = effective_style {
-                    let render_style = PointRenderStyle {
-                        fill_color: style.fill_color.into(),
-                        stroke_color: style.stroke_color.into(),
-                        stroke_width: style.stroke_width,
-                        radius: style.radius,
-                        opacity: style.opacity * opacity_multiplier,
-                    };
+                    let render_style = style.to_render_style(opacity_multiplier);
                     context.render_point(&screen_pos, &render_style)?;
                 }
             }
@@ -595,12 +585,7 @@ impl VectorLayer {
                     .map(|p| viewport.lat_lng_to_pixel(p))
                     .collect();
                 if let VectorFeatureStyle::Line(style) = effective_style {
-                    let render_style = LineRenderStyle {
-                        color: style.color.into(),
-                        width: style.width,
-                        opacity: style.opacity * opacity_multiplier,
-                        dash_pattern: style.dash_pattern.clone(),
-                    };
+                    let render_style = style.to_render_style(opacity_multiplier);
                     context.render_line(&screen_points, &render_style)?;
                 }
             }
@@ -616,25 +601,13 @@ impl VectorLayer {
                     .map(|hole| hole.iter().map(|p| viewport.lat_lng_to_pixel(p)).collect())
                     .collect();
                 if let VectorFeatureStyle::Polygon(style) = effective_style {
-                    let render_style = PolygonRenderStyle {
-                        fill_color: style.fill_color.into(),
-                        stroke_color: style.stroke_color.into(),
-                        stroke_width: style.stroke_width,
-                        fill_opacity: style.fill_opacity * opacity_multiplier,
-                        stroke_opacity: style.stroke_opacity * opacity_multiplier,
-                    };
+                    let render_style = style.to_render_style(opacity_multiplier);
                     context.render_polygon(&screen_exterior, &screen_holes, &render_style)?;
                 }
             }
             VectorFeature::MultiPoint { points, .. } => {
                 if let VectorFeatureStyle::Point(style) = effective_style {
-                    let render_style = PointRenderStyle {
-                        fill_color: style.fill_color.into(),
-                        stroke_color: style.stroke_color.into(),
-                        stroke_width: style.stroke_width,
-                        radius: style.radius,
-                        opacity: style.opacity * opacity_multiplier,
-                    };
+                    let render_style = style.to_render_style(opacity_multiplier);
                     for position in points {
                         let screen_pos = viewport.lat_lng_to_pixel(position);
                         context.render_point(&screen_pos, &render_style)?;
@@ -643,12 +616,7 @@ impl VectorLayer {
             }
             VectorFeature::MultiLineString { lines, .. } => {
                 if let VectorFeatureStyle::Line(style) = effective_style {
-                    let render_style = LineRenderStyle {
-                        color: style.color.into(),
-                        width: style.width,
-                        opacity: style.opacity * opacity_multiplier,
-                        dash_pattern: style.dash_pattern.clone(),
-                    };
+                    let render_style = style.to_render_style(opacity_multiplier);
                     for line in lines {
                         let screen_points: Vec<Point> =
                             line.iter().map(|p| viewport.lat_lng_to_pixel(p)).collect();
@@ -658,13 +626,7 @@ impl VectorLayer {
             }
             VectorFeature::MultiPolygon { polygons, .. } => {
                 if let VectorFeatureStyle::Polygon(style) = effective_style {
-                    let render_style = PolygonRenderStyle {
-                        fill_color: style.fill_color.into(),
-                        stroke_color: style.stroke_color.into(),
-                        stroke_width: style.stroke_width,
-                        fill_opacity: style.fill_opacity * opacity_multiplier,
-                        stroke_opacity: style.stroke_opacity * opacity_multiplier,
-                    };
+                    let render_style = style.to_render_style(opacity_multiplier);
                     for (exterior, holes) in polygons {
                         let screen_exterior: Vec<Point> = exterior
                             .iter()
@@ -717,10 +679,7 @@ impl LayerTrait for VectorLayer {
         })
     }
 
-    fn set_options(&mut self, _options: serde_json::Value) -> Result<()> {
-        // TODO: Implement option setting for vector layer
-        Ok(())
-    }
+    crate::impl_todo_options_setting!();
 }
 mod tests {
     #[test]
@@ -733,7 +692,7 @@ mod tests {
             None,
         );
 
-        layer.add_feature(point_feature);
+        let _ =layer.add_feature(point_feature);
         assert_eq!(layer.feature_count(), 1);
 
         let feature = layer.get_feature("point1");
@@ -753,7 +712,7 @@ mod tests {
             None,
         );
 
-        layer.add_feature(point_feature);
+        let _ = layer.add_feature(point_feature);
         layer.select_feature("point1", false);
 
         assert_eq!(layer.selected_features().len(), 1);

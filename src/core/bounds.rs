@@ -1,4 +1,5 @@
 use crate::core::geo::Point;
+use crate::traits::{GeometryOps, MatrixTransform};
 use serde::{Deserialize, Serialize};
 
 /// Represents a bounding box in screen/pixel coordinates
@@ -168,6 +169,43 @@ impl Bounds {
 impl Default for Bounds {
     fn default() -> Self {
         Self::new(Point::new(0.0, 0.0), Point::new(0.0, 0.0))
+    }
+}
+
+/// Implement unified geometry operations for Bounds
+impl GeometryOps<Point> for Bounds {
+    fn contains_point(&self, point: &Point) -> bool {
+        self.contains(point)
+    }
+    
+    fn intersects_bounds(&self, other: &Self) -> bool {
+        self.intersects(other)
+    }
+    
+    fn extend_with_point(&mut self, point: &Point) {
+        self.extend(point)
+    }
+    
+    fn center(&self) -> Point {
+        self.center()
+    }
+    
+    fn is_valid(&self) -> bool {
+        self.is_valid()
+    }
+    
+    fn area(&self) -> f64 {
+        self.area()
+    }
+}
+
+/// Implement unified matrix transformation for Points
+impl MatrixTransform for Point {
+    fn apply_transform(&self, matrix: &[f64; 6]) -> Self {
+        Point::new(
+            matrix[0] * self.x + matrix[2] * self.y + matrix[4], // a*x + c*y + e
+            matrix[1] * self.x + matrix[3] * self.y + matrix[5], // b*x + d*y + f
+        )
     }
 }
 

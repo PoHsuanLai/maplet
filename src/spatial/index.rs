@@ -81,6 +81,37 @@ impl<T: Clone> SpatialIndex<T> {
             bounds: None,
         }
     }
+}
+
+/// Implement unified SpatialOperations trait
+impl<T: Clone> crate::traits::SpatialOperations<T> for SpatialIndex<T> {
+    fn insert(&mut self, id: String, bounds: Bounds, data: T) -> Result<()> {
+        let item = SpatialItem::new(id, bounds, data);
+        self.insert(item)
+    }
+    
+    fn remove(&mut self, id: &str) -> Result<Option<T>> {
+        Ok(self.remove(id)?.map(|item| item.data))
+    }
+    
+    fn query(&self, bounds: &Bounds) -> Vec<&T> {
+        self.query(bounds).into_iter().map(|item| &item.data).collect()
+    }
+    
+    fn query_radius(&self, center: &Point, radius: f64) -> Vec<&T> {
+        self.query_radius(center, radius).into_iter().map(|item| &item.data).collect()
+    }
+    
+    fn clear(&mut self) {
+        *self = Self::new();
+    }
+    
+    fn len(&self) -> usize {
+        self.rtree.size()
+    }
+}
+
+impl<T: Clone> SpatialIndex<T> {
 
     pub fn insert(&mut self, item: SpatialItem<T>) -> Result<()> {
         if let Some(ref mut b) = self.bounds {

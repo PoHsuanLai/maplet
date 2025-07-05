@@ -1,8 +1,6 @@
 use crate::{runtime, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-use std::sync::Arc;
+use crate::prelude::{Ordering, BinaryHeap, Arc};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 /// Priority levels for background tasks
@@ -87,50 +85,45 @@ impl Default for TaskManagerConfig {
     }
 }
 
-/// Simple semaphore implementation for concurrency control
-#[derive(Debug)]
-struct SimpleSemaphore {
-    permits: std::sync::Arc<std::sync::Mutex<usize>>,
-    max_permits: usize,
-}
-
-impl SimpleSemaphore {
-    fn new(permits: usize) -> Self {
+/// Unified configuration presets for TaskManagerConfig
+impl TaskManagerConfig {
+    pub fn low_resource() -> Self {
         Self {
-            permits: std::sync::Arc::new(std::sync::Mutex::new(permits)),
-            max_permits: permits,
+            max_concurrent_tasks: 2,
+            max_queue_size: 100,
+            enable_metrics: false,
+            test_mode: false,
         }
     }
-
-    fn try_acquire(&self) -> bool {
-        if let Ok(mut permits) = self.permits.lock() {
-            if *permits > 0 {
-                *permits -= 1;
-                return true;
-            }
-        }
-        false
-    }
-
-    fn release(&self) {
-        if let Ok(mut permits) = self.permits.lock() {
-            if *permits < self.max_permits {
-                *permits += 1;
-            }
+    
+    pub fn high_performance() -> Self {
+        Self {
+            max_concurrent_tasks: 16,
+            max_queue_size: 5000,
+            enable_metrics: true,
+            test_mode: false,
         }
     }
-
-    fn available_permits(&self) -> usize {
-        self.permits.lock().map(|permits| *permits).unwrap_or(0)
+    
+    pub fn for_testing() -> Self {
+        Self {
+            max_concurrent_tasks: 1,
+            max_queue_size: 10,
+            enable_metrics: false,
+            test_mode: true,
+        }
     }
 }
+
+// Use unified semaphore from runtime module
+use crate::runtime::async_utils::Semaphore;
 
 /// Manages background task execution with priority scheduling
 pub struct BackgroundTaskManager {
     config: TaskManagerConfig,
     task_tx: Sender<PrioritizedTask>,
     result_rx: Receiver<TaskResult>,
-    semaphore: Arc<SimpleSemaphore>,
+    semaphore: Semaphore,
     _worker_handle: Option<Box<dyn runtime::AsyncHandle>>,
     shutdown_signal: Arc<AtomicBool>,
 }
@@ -143,7 +136,7 @@ impl BackgroundTaskManager {
         
         let (task_tx, task_rx) = unbounded();
         let (result_tx, result_rx) = unbounded();
-        let semaphore = Arc::new(SimpleSemaphore::new(config.max_concurrent_tasks));
+        let semaphore = Semaphore::new(config.max_concurrent_tasks);
         let shutdown_signal = Arc::new(AtomicBool::new(false));
 
         let worker_handle = if config.test_mode {
@@ -250,11 +243,16 @@ impl BackgroundTaskManager {
         self.config.max_concurrent_tasks - self.semaphore.available_permits()
     }
 
+    /// Get the current configuration
+    pub fn get_config(&self) -> &TaskManagerConfig {
+        &self.config
+    }
+
     /// Worker loop that processes tasks from the queue
     async fn worker_loop(
         task_rx: Receiver<PrioritizedTask>,
         result_tx: Sender<TaskResult>,
-        semaphore: Arc<SimpleSemaphore>,
+        semaphore: Semaphore,
         config: TaskManagerConfig,
         shutdown_signal: Arc<AtomicBool>,
     ) {
@@ -324,8 +322,48 @@ impl BackgroundTaskManager {
     }
 }
 
+/// Implement unified configuration trait for BackgroundTaskManager
+impl crate::traits::Configurable for BackgroundTaskManager {
+    type Config = TaskManagerConfig;
+    
+    fn config(&self) -> &Self::Config {
+        &self.config
+    }
+    
+    fn set_config(&mut self, config: Self::Config) -> crate::Result<()> {
+        // Validate the new config
+        Self::validate_config(&config)?;
+        
+        // Note: Changing config at runtime would require recreating the semaphore
+        // and restarting the worker loop. For now, we just update the stored config.
+        self.config = config;
+        Ok(())
+    }
+    
+    fn validate_config(config: &Self::Config) -> crate::Result<()> {
+        if config.max_concurrent_tasks == 0 {
+            return Err("max_concurrent_tasks must be greater than 0".into());
+        }
+        if config.max_queue_size == 0 {
+            return Err("max_queue_size must be greater than 0".into());
+        }
+        Ok(())
+    }
+}
+
 // AsyncSpawner trait moved to runtime.rs to avoid duplication
 pub use crate::runtime::AsyncSpawner;
+
+/// Unified duration estimation helpers to eliminate duplicate patterns
+pub fn estimate_duration_from_data_size(data_size: usize, base_ms: u64) -> std::time::Duration {
+    let data_factor = (data_size / 1024).min(1000); // 1ms per KB, capped at 1s
+    std::time::Duration::from_millis(base_ms + data_factor as u64)
+}
+
+pub fn estimate_duration_from_item_count(item_count: usize, base_ms: u64, per_item_ms: u64) -> std::time::Duration {
+    let item_factor = (item_count / 100).max(1) as u64; // Base unit of 100 items
+    std::time::Duration::from_millis(base_ms + (item_factor * per_item_ms).min(1000))
+}
 
 /// Common async execution helper to standardize tokio-runtime patterns
 pub struct AsyncExecutor;

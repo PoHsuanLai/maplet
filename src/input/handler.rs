@@ -1,10 +1,10 @@
 use crate::{
     core::geo::{LatLng, LatLngBounds, Point},
     input::events::{InputEvent, MapEvent},
+    traits::{PointMath, Lerp},
+    prelude::{Duration, Instant, VecDeque, HashMap},
     Result,
 };
-use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
 
 /// Unified action that combines input response and animation
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ pub enum Action {
         animate: bool,
         duration: Duration,
     },
-    /// Pan with inertia (like Leaflet's inertia system)
+    /// Pan with inertia (momentum-based panning)
     PanInertia {
         offset: Point,
         duration: Duration,
@@ -37,37 +37,15 @@ pub enum Action {
     },
 }
 
-/// Easing functions for animations
-#[derive(Debug, Clone, Copy)]
-pub enum Easing {
-    Linear,
-    EaseOut,
-    EaseInOut,
-}
-
-impl Easing {
-    fn apply(&self, t: f64) -> f64 {
-        let t = t.clamp(0.0, 1.0);
-        match self {
-            Easing::Linear => t,
-            Easing::EaseOut => 1.0 - (1.0 - t) * (1.0 - t),
-            Easing::EaseInOut => {
-                if t < 0.5 {
-                    2.0 * t * t
-                } else {
-                    1.0 - 2.0 * (1.0 - t) * (1.0 - t)
-                }
-            }
-        }
-    }
-}
+// Use the unified easing type from animation module
+use crate::layers::animation::EasingType;
 
 /// Active animation state
 #[derive(Debug, Clone)]
 pub struct Animation {
     pub action: Action,
     pub start_time: Instant,
-    pub easing: Easing,
+    pub easing: EasingType,
     pub initial_center: LatLng,
     pub initial_zoom: f64,
 }
@@ -77,7 +55,7 @@ impl Animation {
         Self {
             action,
             start_time: Instant::now(),
-            easing: Easing::EaseOut,
+            easing: EasingType::EaseOut,
             initial_center: current_center,
             initial_zoom: current_zoom,
         }
@@ -103,15 +81,12 @@ impl Animation {
 
         match &self.action {
             Action::SetView { center, zoom, .. } => {
-                let current_center = LatLng::new(
-                    self.initial_center.lat + (center.lat - self.initial_center.lat) * progress,
-                    self.initial_center.lng + (center.lng - self.initial_center.lng) * progress,
-                );
-                let current_zoom = self.initial_zoom + (zoom - self.initial_zoom) * progress;
+                let current_center = self.initial_center.lerp(center, progress);
+                let current_zoom = self.initial_zoom.lerp(zoom, progress);
                 Some((current_center, current_zoom))
             }
             Action::Zoom { level, .. } => {
-                let current_zoom = self.initial_zoom + (level - self.initial_zoom) * progress;
+                let current_zoom = self.initial_zoom.lerp(level, progress);
                 Some((self.initial_center, current_zoom))
             }
             Action::Pan { .. } | Action::PanInertia { .. } => {
@@ -122,7 +97,7 @@ impl Animation {
     }
 }
 
-/// Drag state tracking (like Leaflet's Draggable)
+/// Drag state tracking for map dragging
 #[derive(Debug, Clone)]
 struct DragState {
     /// Whether dragging is currently active

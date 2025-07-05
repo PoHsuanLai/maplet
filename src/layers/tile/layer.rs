@@ -11,6 +11,7 @@ use crate::{
         animation::AnimationManager,
     },
     rendering::context::RenderContext,
+    traits::{PointMath, GeometryOps, RetryLogic},
     Result,
 };
 
@@ -33,10 +34,9 @@ pub struct TileLayer {
     pub(crate) boundary_buffer: f64,
     
     pub(crate) tiles_loading_count: usize,
-    pub(crate) last_loading_count: usize,
     pub(crate) loading_state_changed: bool,
 }
-use std::{collections::HashMap, sync::Arc};
+use crate::prelude::{HashMap, Arc};
 
 #[cfg(feature = "debug")]
 use log;
@@ -47,6 +47,20 @@ impl TileLayer {
         id: String,
         tile_source: Box<dyn TileSource>,
         options: TileLayerOptions,
+    ) -> Result<Self> {
+        let loader_config = TileLoaderConfig {
+            max_concurrent: 128, // Much more aggressive concurrency
+            max_retries: 2,
+            retry_delay: std::time::Duration::from_millis(25), // Faster retries
+        };
+        Self::new_with_config(id, tile_source, options, loader_config)
+    }
+
+    pub fn new_with_config(
+        id: String,
+        tile_source: Box<dyn TileSource>,
+        options: TileLayerOptions,
+        loader_config: TileLoaderConfig,
     ) -> Result<Self> {
         let properties = LayerProperties {
             id,
@@ -59,12 +73,6 @@ impl TileLayer {
             options: serde_json::Value::Null,
         };
 
-        let loader_config = TileLoaderConfig {
-            max_concurrent: 6,
-            max_retries: 3,
-            retry_delay: std::time::Duration::from_millis(500),
-        };
-
         let tile_loader = TileLoader::new(loader_config);
         let tile_cache = TileCache::new(1024);
 
@@ -73,7 +81,7 @@ impl TileLayer {
             tile_source,
             tile_loader,
             tile_cache,
-            levels: HashMap::new(),
+            levels: HashMap::default(),
             tile_zoom: None,
             loading: false,
             test_mode: false,
@@ -82,7 +90,6 @@ impl TileLayer {
             render_bounds: options.bounds.clone(),
             boundary_buffer: 0.1, // Default buffer in degrees
             tiles_loading_count: 0,
-            last_loading_count: 0,
             loading_state_changed: false,
             options,
         })
@@ -209,7 +216,12 @@ impl TileLayer {
 
     pub fn for_testing(id: String, name: String) -> Self {
         println!("🧪 [DEBUG] TileLayer::for_testing() - Creating test tile layer '{}' ({})", name, id);
-        let mut layer = Self::new(id, Box::new(OpenStreetMapSource::new()), TileLayerOptions::default()).unwrap();
+        let mut layer = Self::new_with_config(
+            id, 
+            Box::new(OpenStreetMapSource::new()), 
+            TileLayerOptions::default(),
+            TileLoaderConfig::for_testing()
+        ).unwrap();
         layer.test_mode = true;
         layer
     }
@@ -230,6 +242,54 @@ impl TileLayer {
             ..Default::default()
         };
         Self::new(id, Box::new(OpenStreetMapSource::new()), options).unwrap()
+    }
+
+    /// Create a high-performance tile layer with background task manager
+    pub fn new_with_high_performance(
+        id: String,
+        name: String,
+        bg_task_manager: Arc<crate::background::BackgroundTaskManager>,
+    ) -> Self {
+        println!("🚀 [DEBUG] TileLayer::new_with_high_performance() - Creating high-performance tile layer '{}' ({})", name, id);
+        
+        let options = TileLayerOptions {
+            keep_buffer: 8, // Much more aggressive buffering
+            ..Default::default()
+        };
+        
+        // Create tile loader with high-performance preset and background task manager
+        let tile_loader = TileLoader::with_high_performance_preset(bg_task_manager);
+        
+        let properties = LayerProperties {
+            id,
+            name,
+            layer_type: LayerType::Tile,
+            visible: true,
+            opacity: options.opacity,
+            z_index: options.z_index,
+            interactive: false,
+            options: serde_json::Value::Null,
+        };
+
+        let tile_cache = TileCache::new(4096); // Large cache for high performance
+
+        Self {
+            properties,
+            tile_source: Box::new(OpenStreetMapSource::new()),
+            tile_loader,
+            tile_cache,
+            levels: HashMap::default(),
+            tile_zoom: None,
+            loading: false,
+            test_mode: false,
+            keep_buffer: options.keep_buffer,
+            animation_manager: Some(AnimationManager::new()),
+            render_bounds: options.bounds.clone(),
+            boundary_buffer: 0.1,
+            tiles_loading_count: 0,
+            loading_state_changed: false,
+            options,
+        }
     }
 
 
@@ -300,7 +360,7 @@ impl TileLayer {
     }
 
     pub fn is_loading(&self) -> bool {
-        self.tiles_loading_count > 0 && (self.loading_state_changed || self.tiles_loading_count < 5)
+        self.tiles_loading_count > 0 && (self.loading_state_changed || self.tiles_loading_count < 10)
     }
 
 
@@ -462,7 +522,7 @@ impl TileLayer {
             );
             
             // Check if tile intersects with buffered bounds
-            buffered_bounds.intersects(&tile_bounds)
+            buffered_bounds.intersects_bounds(&tile_bounds)
         } else {
             true // No boundary restrictions
         }
@@ -478,87 +538,201 @@ impl TileLayer {
 
     /// Static version of calculate_tile_bounds to avoid borrow conflicts
     fn calculate_tile_bounds_static(&self, coord: &TileCoord) -> crate::core::geo::LatLngBounds {
-        let n = 2.0_f64.powi(coord.z as i32);
+        // Use unified unprojection instead of duplicate Web Mercator calculations
+        let tile_size = 256.0;
         
-        // Northwest corner
-        let nw_lng = coord.x as f64 / n * 360.0 - 180.0;
-        let nw_lat_rad = std::f64::consts::PI * (1.0 - 2.0 * coord.y as f64 / n);
-        let nw_lat = nw_lat_rad.sinh().atan().to_degrees();
+        // Calculate pixel bounds for this tile
+        let nw_pixel = crate::core::geo::Point::new(
+            coord.x as f64 * tile_size, 
+            coord.y as f64 * tile_size
+        );
+        let se_pixel = crate::core::geo::Point::new(
+            (coord.x + 1) as f64 * tile_size, 
+            (coord.y + 1) as f64 * tile_size
+        );
         
-        // Southeast corner  
-        let se_lng = (coord.x + 1) as f64 / n * 360.0 - 180.0;
-        let se_lat_rad = std::f64::consts::PI * (1.0 - 2.0 * (coord.y + 1) as f64 / n);
-        let se_lat = se_lat_rad.sinh().atan().to_degrees();
+        // Use unified unprojection
+        let temp_viewport = crate::core::viewport::Viewport::default();
+        let nw_latlng = temp_viewport.unproject(&nw_pixel, Some(coord.z as f64));
+        let se_latlng = temp_viewport.unproject(&se_pixel, Some(coord.z as f64));
         
         crate::core::geo::LatLngBounds::new(
-            crate::core::geo::LatLng::new(se_lat, nw_lng), // south-west
-            crate::core::geo::LatLng::new(nw_lat, se_lng), // north-east
+            crate::core::geo::LatLng::new(se_latlng.lat, nw_latlng.lng), // south-west
+            crate::core::geo::LatLng::new(nw_latlng.lat, se_latlng.lng), // north-east
         )
     }
 
     /// Main update method that consolidates all tile operations
     /// This is the unified entry point for all tile loading, similar to Leaflet's _update method
     pub fn update_tiles(&mut self, viewport: &Viewport) -> Result<()> {
-        let target_zoom = viewport.zoom.floor() as u8;
-        let clamped_zoom = target_zoom.clamp(self.options.min_zoom, self.options.max_zoom);
-
-        // Test mode - minimal tile setup
-        if self.test_mode {
-            self.levels
-                .entry(clamped_zoom)
-                .or_insert_with(|| TileLevel::new(clamped_zoom));
+        // Trigger aggressive prefetching by updating the tile loader with viewport changes
+        self.tile_loader.update_viewport(viewport);
+        let zoom = viewport.zoom.floor() as u8;
+        
+        // Check for zoom changes and trigger Leaflet-style animations
+        let zoom_changed = if let Some(previous_zoom) = self.tile_zoom {
+            zoom != previous_zoom
+        } else {
+            true // First time setup
+        };
+        
+        if zoom_changed && self.tile_zoom.is_some() {
+            // Start zoom animation between old and new zoom levels
+            if let Some(ref mut animation_manager) = self.animation_manager {
+                let old_zoom = self.tile_zoom.unwrap() as f64;
+                let new_zoom = zoom as f64;
+                
+    // Use smooth zoom animation
+                animation_manager.start_smooth_zoom(
+                    viewport.center,
+                    viewport.center,
+                    old_zoom,
+                    new_zoom,
+                    None, // Focus point (None for center zoom)
+                );
+            }
+            
+            // Animate the transition between levels
+            self.animate_zoom_transition(
+                self.tile_zoom.unwrap() as f64,
+                zoom as f64,
+                viewport.center,
+                viewport,
+            );
+        }
+        
+        // Update levels like Leaflet (manage zoom level containers)
+        self.update_levels(zoom, self.options.max_zoom);
+        
+        // Set zoom transforms for all levels during animations
+        self.set_zoom_transforms(viewport.center, viewport.zoom, viewport);
+        
+        // Skip if zoom is out of bounds
+        if zoom < self.options.min_zoom || zoom > self.options.max_zoom {
             return Ok(());
         }
 
-        // Process any completed tile results first
-        self.process_tile_results()?;
-
-        // Handle zoom animation updates (CSS-style transforms)
-        if let Some(ref mut animation_manager) = self.animation_manager {
-            if let Some(_animation_state) = animation_manager.update() {
-                // Animation transforms are handled by the central orchestrator now
+        // Calculate visible tile bounds (like Leaflet's _getTiledPixelBounds)
+        let tiled_pixel_bounds = self.get_tiled_pixel_bounds(viewport, zoom);
+        let tile_range = self.pixel_bounds_to_tile_range(&tiled_pixel_bounds, zoom);
+        
+        // Expand tile range by keepBuffer (like Leaflet's noPruneRange)
+        let buffer_range = self.expand_tile_range(&tile_range, self.keep_buffer as i32);
+        
+        // Mark tiles for retention first (like Leaflet's tile retention)
+        self.mark_tiles_for_retention(&buffer_range, zoom);
+        
+        // Get all tiles in the buffered range
+        let all_coords = self.tile_range_to_coords(&buffer_range, zoom);
+        
+        // Calculate tile center for distance-based sorting (like Leaflet)
+        let tile_center_x = (tile_range.0.x + tile_range.1.x) / 2.0;
+        let tile_center_y = (tile_range.0.y + tile_range.1.y) / 2.0;
+        let tile_center = Point::new(tile_center_x, tile_center_y);
+        
+        // Separate tiles into priority groups like Leaflet
+        let mut visible_tiles = Vec::new();
+        let mut buffer_tiles = Vec::new();
+        
+        for coord in all_coords {
+            // Skip invalid tiles
+            if !self.is_valid_tile(&coord) {
+                continue;
+            }
+            
+            // Check if tile is in visible range (not just buffer)
+            let visible_tile_range = self.tile_range_to_coords(&tile_range, zoom);
+            if visible_tile_range.contains(&coord) {
+                visible_tiles.push(coord);
+            } else {
+                buffer_tiles.push(coord);
             }
         }
-
-        // Calculate current view requirements
-        let tiled_pixel_bounds = self.get_tiled_pixel_bounds(viewport, clamped_zoom);
-        let tile_range = self.pixel_bounds_to_tile_range(&tiled_pixel_bounds, clamped_zoom);
-        let visible_tiles = self.tile_range_to_coords(&tile_range, clamped_zoom);
-
-        // Expanded range for prefetching (Leaflet's keepBuffer)
-        let buffered_range = self.expand_tile_range(&tile_range, self.keep_buffer as i32);
-        let prefetch_tiles = self.tile_range_to_coords(&buffered_range, clamped_zoom);
-
-        // Ensure level exists for current zoom
-        self.levels
-            .entry(clamped_zoom)
-            .or_insert_with(|| TileLevel::new(clamped_zoom));
-
-        // Mark tiles for retention within buffer area (Leaflet's noPruneRange)
-        self.mark_tiles_for_retention(&buffered_range, clamped_zoom);
-
-        // Load visible tiles with highest priority
-        self.load_tiles_batch(&visible_tiles, TilePriority::Visible, clamped_zoom)?;
-
-        // Load prefetch tiles (excluding already visible ones)
-        let prefetch_only: Vec<_> = prefetch_tiles
-            .into_iter()
-            .filter(|coord| !visible_tiles.contains(coord))
-            .collect();
-        self.load_tiles_batch(&prefetch_only, TilePriority::Prefetch, clamped_zoom)?;
-
-        // Clean up old tiles
-        self.prune_tiles(clamped_zoom);
-
-        // Update loading state
-        self.tile_zoom = Some(clamped_zoom);
-        let current_loading_count = self.count_loading_tiles();
-        self.loading_state_changed = current_loading_count != self.last_loading_count;
-        self.last_loading_count = current_loading_count;
-        self.tiles_loading_count = current_loading_count;
-        self.loading = current_loading_count > 0;
-
+        
+        // Sort visible tiles by distance from center (like Leaflet)
+        visible_tiles.sort_by(|a, b| {
+            let dist_a = ((a.x as f64 - tile_center.x).powi(2) + (a.y as f64 - tile_center.y).powi(2)).sqrt();
+            let dist_b = ((b.x as f64 - tile_center.x).powi(2) + (b.y as f64 - tile_center.y).powi(2)).sqrt();
+            dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        // Sort buffer tiles by distance from center
+        buffer_tiles.sort_by(|a, b| {
+            let dist_a = ((a.x as f64 - tile_center.x).powi(2) + (a.y as f64 - tile_center.y).powi(2)).sqrt();
+            let dist_b = ((b.x as f64 - tile_center.x).powi(2) + (b.y as f64 - tile_center.y).powi(2)).sqrt();
+            dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        // Load visible tiles first with high priority
+        if !visible_tiles.is_empty() {
+            self.load_tiles_batch(&visible_tiles, super::TilePriority::Visible, zoom)?;
+        }
+        
+        // Load buffer tiles with lower priority (Leaflet-style prefetch)
+        if !buffer_tiles.is_empty() {
+            self.load_tiles_batch(&buffer_tiles, super::TilePriority::Adjacent, zoom)?;
+        }
+        
+        // Load parent tiles for better zoom-out experience (like Leaflet's _retainParent)
+        if zoom > 0 {
+            let parent_zoom = zoom - 1;
+            let parent_coords = self.get_parent_tiles(&tile_range, parent_zoom);
+            if !parent_coords.is_empty() {
+                self.load_tiles_batch(&parent_coords, super::TilePriority::Background, parent_zoom)?;
+            }
+        }
+        
+        // Load child tiles for better zoom-in experience (like Leaflet's _retainChildren)
+        if zoom < 18 {
+            let child_zoom = zoom + 1;
+            let child_coords = self.get_child_tiles(&tile_range, child_zoom);
+            if !child_coords.is_empty() && child_coords.len() <= 16 { // Limit child tiles
+                self.load_tiles_batch(&child_coords, super::TilePriority::Background, child_zoom)?;
+            }
+        }
+        
+        // Prune old tiles that are no longer needed
+        self.prune_tiles(zoom);
+        
         Ok(())
+    }
+    
+    /// Get parent tiles for the given tile range (like Leaflet's parent retention)
+    fn get_parent_tiles(&self, tile_range: &(Point, Point), parent_zoom: u8) -> Vec<TileCoord> {
+        let mut parent_tiles = Vec::new();
+        
+        // Calculate parent tile coordinates (each parent contains 4 children)
+        let min_parent_x = (tile_range.0.x as u32) / 2;
+        let max_parent_x = (tile_range.1.x as u32) / 2;
+        let min_parent_y = (tile_range.0.y as u32) / 2;
+        let max_parent_y = (tile_range.1.y as u32) / 2;
+        
+        for x in min_parent_x..=max_parent_x {
+            for y in min_parent_y..=max_parent_y {
+                parent_tiles.push(TileCoord { x, y, z: parent_zoom });
+            }
+        }
+        
+        parent_tiles
+    }
+    
+    /// Get child tiles for the given tile range (like Leaflet's child retention)
+    fn get_child_tiles(&self, tile_range: &(Point, Point), child_zoom: u8) -> Vec<TileCoord> {
+        let mut child_tiles = Vec::new();
+        
+        // Calculate child tile coordinates (each parent has 4 children)
+        let min_child_x = (tile_range.0.x as u32) * 2;
+        let max_child_x = (tile_range.1.x as u32) * 2 + 1;
+        let min_child_y = (tile_range.0.y as u32) * 2;
+        let max_child_y = (tile_range.1.y as u32) * 2 + 1;
+        
+        for x in min_child_x..=max_child_x {
+            for y in min_child_y..=max_child_y {
+                child_tiles.push(TileCoord { x, y, z: child_zoom });
+            }
+        }
+        
+        child_tiles
     }
 
     /// Expand tile range by buffer amount (Leaflet's keepBuffer)
@@ -611,17 +785,37 @@ impl TileLayer {
         let render_bounds = self.render_bounds.clone();
         let boundary_buffer = self.boundary_buffer;
         
-        // Prune tiles within each level
+        // First, mark all tiles for retention (like Leaflet's _pruneTiles)
+        for level in self.levels.values_mut() {
+            for tile in level.tiles.values_mut() {
+                tile.retain = tile.current;
+            }
+        }
+        
+        // Collect coordinates that need parent/child retention (like Leaflet's _retainParent and _retainChildren)
+        let mut coords_needing_retention = Vec::new();
+        for level in self.levels.values() {
+            for (coord, tile) in level.tiles.iter() {
+                if tile.current && !tile.is_loaded() {
+                    coords_needing_retention.push(*coord);
+                }
+            }
+        }
+        
+        // Apply retention logic without borrowing conflicts
+        for coord in coords_needing_retention {
+            // Try to retain parent tiles going back 5 zoom levels
+            if !self.retain_parent_tiles(coord.x, coord.y, coord.z, coord.z.saturating_sub(5)) {
+                // If no parent found, retain children going forward 2 zoom levels
+                self.retain_child_tiles(coord.x, coord.y, coord.z, (coord.z + 2).min(18));
+            }
+        }
+        
+        // Now prune tiles that are not marked for retention
         for level in self.levels.values_mut() {
             level.tiles.retain(|coord, tile| {
-                // Always keep current tiles
-                if tile.current {
-                    return true;
-                }
-                
-                // Keep tiles marked for retention
+                // Always keep tiles marked for retention
                 if tile.retain {
-                    tile.retain = false; // Reset for next frame
                     return true;
                 }
                 
@@ -649,7 +843,7 @@ impl TileLayer {
                         ),
                     );
                     
-                    if !buffered_bounds.intersects(&tile_bounds) {
+                    if !buffered_bounds.intersects_bounds(&tile_bounds) {
                         return false;
                     }
                 }
@@ -673,37 +867,207 @@ impl TileLayer {
         }
     }
 
-    /// Count tiles currently loading across all levels
-    fn count_loading_tiles(&self) -> usize {
-        self.levels
-            .values()
-            .map(|level| {
-                level
-                    .tiles
-                    .values()
-                    .filter(|tile| tile.loading)
-                    .count()
-            })
-            .sum()
-    }
-
     /// Static version of calculate_tile_bounds to avoid borrow conflicts
     fn calculate_tile_bounds_static_fn(coord: &TileCoord) -> crate::core::geo::LatLngBounds {
-        let n = 2.0_f64.powi(coord.z as i32);
+        // Use unified unprojection instead of duplicate Web Mercator calculations
+        let tile_size = 256.0;
         
-        // Northwest corner
-        let nw_lng = coord.x as f64 / n * 360.0 - 180.0;
-        let nw_lat_rad = std::f64::consts::PI * (1.0 - 2.0 * coord.y as f64 / n);
-        let nw_lat = nw_lat_rad.sinh().atan().to_degrees();
+        // Calculate pixel bounds for this tile
+        let nw_pixel = crate::core::geo::Point::new(
+            coord.x as f64 * tile_size, 
+            coord.y as f64 * tile_size
+        );
+        let se_pixel = crate::core::geo::Point::new(
+            (coord.x + 1) as f64 * tile_size, 
+            (coord.y + 1) as f64 * tile_size
+        );
         
-        // Southeast corner  
-        let se_lng = (coord.x + 1) as f64 / n * 360.0 - 180.0;
-        let se_lat_rad = std::f64::consts::PI * (1.0 - 2.0 * (coord.y + 1) as f64 / n);
-        let se_lat = se_lat_rad.sinh().atan().to_degrees();
+        // Use unified unprojection
+        let temp_viewport = crate::core::viewport::Viewport::default();
+        let nw_latlng = temp_viewport.unproject(&nw_pixel, Some(coord.z as f64));
+        let se_latlng = temp_viewport.unproject(&se_pixel, Some(coord.z as f64));
         
         crate::core::geo::LatLngBounds::new(
-            crate::core::geo::LatLng::new(se_lat, nw_lng), // south-west
-            crate::core::geo::LatLng::new(nw_lat, se_lng), // north-east
+            crate::core::geo::LatLng::new(se_latlng.lat, nw_latlng.lng), // south-west
+            crate::core::geo::LatLng::new(nw_latlng.lat, se_latlng.lng), // north-east
         )
+    }
+
+    /// Retain parent tiles for smooth zoom-out (like Leaflet's _retainParent)
+    fn retain_parent_tiles(&mut self, x: u32, y: u32, z: u8, min_zoom: u8) -> bool {
+        if z <= min_zoom {
+            return false;
+        }
+
+        let parent_x = x / 2;
+        let parent_y = y / 2;
+        let parent_z = z - 1;
+        let parent_coord = TileCoord { x: parent_x, y: parent_y, z: parent_z };
+
+        if let Some(parent_level) = self.levels.get_mut(&parent_z) {
+            if let Some(parent_tile) = parent_level.tiles.get_mut(&parent_coord) {
+                if parent_tile.is_loaded() {
+                    parent_tile.retain = true;
+                    return true;
+                } else if parent_tile.loading {
+                    parent_tile.retain = true;
+                }
+            }
+        }
+
+        // Recursively check higher zoom levels
+        if parent_z > min_zoom {
+            return self.retain_parent_tiles(parent_x, parent_y, parent_z, min_zoom);
+        }
+
+        false
+    }
+
+    /// Retain child tiles for smooth zoom-in (like Leaflet's _retainChildren)
+    fn retain_child_tiles(&mut self, x: u32, y: u32, z: u8, max_zoom: u8) {
+        if z >= max_zoom {
+            return;
+        }
+
+        let child_z = z + 1;
+        
+        // Each parent tile has 4 children
+        for child_x in (x * 2)..(x * 2 + 2) {
+            for child_y in (y * 2)..(y * 2 + 2) {
+                let child_coord = TileCoord { x: child_x, y: child_y, z: child_z };
+                
+                if let Some(child_level) = self.levels.get_mut(&child_z) {
+                    if let Some(child_tile) = child_level.tiles.get_mut(&child_coord) {
+                        if child_tile.is_loaded() {
+                            child_tile.retain = true;
+                            continue;
+                        } else if child_tile.loading {
+                            child_tile.retain = true;
+                        }
+                    }
+                }
+
+                // Recursively check higher zoom levels
+                if child_z < max_zoom {
+                    self.retain_child_tiles(child_x, child_y, child_z, max_zoom);
+                }
+            }
+        }
+    }
+    
+    /// Leaflet-style level management methods
+    
+    /// Update levels like Leaflet's _updateLevels method
+    /// This manages the CSS-style zoom level containers
+    pub fn update_levels(&mut self, current_zoom: u8, max_zoom: u8) {
+        // Remove levels that are too far from current zoom or have no tiles
+        let levels_to_remove: Vec<_> = self.levels.keys()
+            .filter(|&&zoom| {
+                let level = self.levels.get(&zoom).unwrap();
+                let zoom_diff = (zoom as i16 - current_zoom as i16).abs();
+                
+                // Remove if too far from current zoom OR has no tiles and is not current zoom
+                zoom_diff > 2 || (level.tiles.is_empty() && zoom != current_zoom)
+            })
+            .cloned()
+            .collect();
+        
+        for zoom in levels_to_remove {
+            #[cfg(feature = "debug")]
+            log::debug!("Removing level {} (too far from current zoom {} or empty)", zoom, current_zoom);
+            self.levels.remove(&zoom);
+        }
+        
+        // Update z-index for existing levels (like Leaflet)
+        for (zoom, level) in self.levels.iter_mut() {
+            level.set_z_index(max_zoom as i32 - (*zoom as i32 - current_zoom as i32).abs());
+        }
+        
+        // Ensure current level exists
+        if !self.levels.contains_key(&current_zoom) {
+            let mut level = TileLevel::new(current_zoom);
+            level.set_active(true);
+            level.set_z_index(max_zoom as i32);
+            self.levels.insert(current_zoom, level);
+            
+            #[cfg(feature = "debug")]
+            log::debug!("Created new level {} with z-index {}", current_zoom, max_zoom);
+        }
+    }
+    
+    /// Set zoom transforms for all levels (like Leaflet's _setZoomTransforms)
+    pub fn set_zoom_transforms(&mut self, center: crate::core::geo::LatLng, zoom: f64, viewport: &crate::core::viewport::Viewport) {
+        for level in self.levels.values_mut() {
+            level.set_zoom_transform(center, zoom, center, zoom, viewport);
+        }
+    }
+    
+    /// Animate zoom transition between levels (like Leaflet's _animateZoom)
+    pub fn animate_zoom_transition(&mut self, from_zoom: f64, to_zoom: f64, center: crate::core::geo::LatLng, viewport: &crate::core::viewport::Viewport) {
+        let from_level = from_zoom.floor() as u8;
+        let to_level = to_zoom.floor() as u8;
+        
+        // Ensure both levels exist
+        if !self.levels.contains_key(&from_level) {
+            self.levels.insert(from_level, TileLevel::new(from_level));
+        }
+        if !self.levels.contains_key(&to_level) {
+            self.levels.insert(to_level, TileLevel::new(to_level));
+        }
+        
+        // Retain parent and child tiles for smooth transitions (like Leaflet)
+        self.retain_tiles_for_zoom_transition(from_level, to_level);
+        
+        // Set transforms for smooth animation
+        if let Some(level) = self.levels.get_mut(&from_level) {
+            level.set_zoom_transform(center, from_zoom, center, to_zoom, viewport);
+            level.set_retain(true);
+            level.set_opacity(1.0);
+        }
+        
+        if let Some(level) = self.levels.get_mut(&to_level) {
+            level.set_zoom_transform(center, to_zoom, center, to_zoom, viewport);
+            level.set_active(true);
+            level.set_opacity(1.0);
+        }
+    }
+    
+    /// Retain parent and child tiles during zoom transitions (like Leaflet's parent/child retention)
+    fn retain_tiles_for_zoom_transition(&mut self, from_zoom: u8, to_zoom: u8) {
+        if from_zoom == to_zoom {
+            return;
+        }
+        
+        // Collect coordinates that need parent/child retention
+        let mut tiles_needing_parents = Vec::new();
+        let mut tiles_needing_children = Vec::new();
+        
+        // If zooming out, we need parent tiles from the higher zoom level
+        if to_zoom < from_zoom {
+            if let Some(from_level) = self.levels.get(&from_zoom) {
+                for coord in from_level.tiles.keys() {
+                    tiles_needing_parents.push(*coord);
+                }
+            }
+        }
+        
+        // If zooming in, we need child tiles from the lower zoom level  
+        if to_zoom > from_zoom {
+            if let Some(from_level) = self.levels.get(&from_zoom) {
+                for coord in from_level.tiles.keys() {
+                    tiles_needing_children.push(*coord);
+                }
+            }
+        }
+        
+        // Retain parent tiles for smooth zoom-out
+        for coord in tiles_needing_parents {
+            self.retain_parent_tiles(coord.x, coord.y, coord.z, to_zoom);
+        }
+        
+        // Retain child tiles for smooth zoom-in
+        for coord in tiles_needing_children {
+            self.retain_child_tiles(coord.x, coord.y, coord.z, to_zoom);
+        }
     }
 }

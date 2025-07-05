@@ -90,3 +90,47 @@ macro_rules! impl_layer_constructor {
         }
     };
 }
+
+/// Macro to implement default options serialization for layers with just properties
+#[macro_export] 
+macro_rules! impl_default_options_serialization {
+    ($properties_field:ident) => {
+        fn options(&self) -> serde_json::Value {
+            serde_json::json!({
+                "id": self.$properties_field.id,
+                "name": self.$properties_field.name,
+                "layer_type": self.$properties_field.layer_type.to_string(),
+                "z_index": self.$properties_field.z_index,
+                "opacity": self.$properties_field.opacity,
+                "visible": self.$properties_field.visible,
+                "interactive": self.$properties_field.interactive
+            })
+        }
+    };
+}
+
+/// Macro to implement standard layer TODO option setting
+#[macro_export]
+macro_rules! impl_todo_options_setting {
+    () => {
+        fn set_options(&mut self, _options: serde_json::Value) -> $crate::Result<()> {
+            // TODO: Implement option setting
+            Ok(())
+        }
+    };
+}
+
+/// Macro to implement standard layer render TODO
+#[macro_export]
+macro_rules! impl_todo_render {
+    () => {
+        fn render(
+            &mut self,
+            _context: &mut $crate::rendering::context::RenderContext,
+            _viewport: &$crate::core::viewport::Viewport,
+        ) -> $crate::Result<()> {
+            // TODO: Implement rendering
+            Ok(())
+        }
+    };
+}

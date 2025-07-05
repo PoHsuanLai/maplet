@@ -53,10 +53,9 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BuildSpatialIndexTask<
     }
 
     fn estimated_duration(&self) -> std::time::Duration {
-        // Estimate based on number of items (R-tree construction is O(n log n))
-        let base_time = std::time::Duration::from_millis(10);
-        let item_factor = ((self.items.len() as f64).log2().ceil() as u32).max(1);
-        base_time * item_factor.min(50) // Cap at 500ms
+        // Use unified duration estimation helper (R-tree construction is O(n log n))
+        let log_factor = ((self.items.len() as f64).log2().ceil() as usize).max(1);
+        crate::background::tasks::estimate_duration_from_item_count(log_factor, 10, 5)
     }
 }
 
@@ -254,10 +253,8 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BatchUpdateIndexTask<T
     }
 
     fn estimated_duration(&self) -> std::time::Duration {
-        // Estimate based on number of updates
-        let base_time = std::time::Duration::from_millis(2);
-        let update_factor = (self.updates.len() / 100).max(1) as u32;
-        base_time * update_factor.min(50) // Cap at 100ms
+        // Use unified duration estimation helper for batch updates
+        crate::background::tasks::estimate_duration_from_item_count(self.updates.len(), 2, 1)
     }
 }
 

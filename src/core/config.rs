@@ -139,6 +139,63 @@ impl Default for MapPerformanceProfile {
     }
 }
 
+/// Unified configuration manager for all map-related configurations
+#[derive(Debug, Clone, Default)]
+pub struct UnifiedMapConfig {
+    pub performance: MapPerformanceOptions,
+    pub task_manager: crate::background::tasks::TaskManagerConfig,
+    pub tile_loader: crate::layers::tile::loader::TileLoaderConfig,
+    #[cfg(feature = "egui")]
+    pub ui_controls: crate::ui::controls::ControlConfig,
+}
+
+/// Unified configuration presets that affect all subsystems
+impl UnifiedMapConfig {
+    /// Low resource configuration for mobile or constrained environments
+    pub fn low_resource() -> Self {
+        Self {
+            performance: MapPerformanceProfile::LowQuality.resolve(),
+            task_manager: crate::background::tasks::TaskManagerConfig::low_resource(),
+            tile_loader: crate::layers::tile::loader::TileLoaderConfig::low_resource(),
+            #[cfg(feature = "egui")]
+            ui_controls: crate::ui::controls::ControlConfig::minimal(),
+        }
+    }
+    
+    /// High performance configuration for desktop applications
+    pub fn high_performance() -> Self {
+        Self {
+            performance: MapPerformanceProfile::HighQuality.resolve(),
+            task_manager: crate::background::tasks::TaskManagerConfig::high_performance(),
+            tile_loader: crate::layers::tile::loader::TileLoaderConfig::high_performance(),
+            #[cfg(feature = "egui")]
+            ui_controls: crate::ui::controls::ControlConfig::full_controls(),
+        }
+    }
+    
+    /// Testing configuration with reduced resources and timeouts
+    pub fn for_testing() -> Self {
+        Self {
+            performance: MapPerformanceProfile::LowQuality.resolve(),
+            task_manager: crate::background::tasks::TaskManagerConfig::for_testing(),
+            tile_loader: crate::layers::tile::loader::TileLoaderConfig::for_testing(),
+            #[cfg(feature = "egui")]
+            ui_controls: crate::ui::controls::ControlConfig::minimal(),
+        }
+    }
+    
+    /// Mobile-friendly configuration
+    pub fn mobile_optimized() -> Self {
+        Self {
+            performance: MapPerformanceProfile::LowQuality.resolve(),
+            task_manager: crate::background::tasks::TaskManagerConfig::low_resource(),
+            tile_loader: crate::layers::tile::loader::TileLoaderConfig::low_resource(),
+            #[cfg(feature = "egui")]
+            ui_controls: crate::ui::controls::ControlConfig::mobile_friendly(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapPerformanceOptions {
     pub framerate: FrameTimingConfig,

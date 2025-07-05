@@ -175,7 +175,7 @@ impl InputEvent {
     }
 }
 
-// Event conversion utilities
+// Event conversion utilities to eliminate duplicate conversion patterns
 impl From<MapEvent> for InputEvent {
     fn from(map_event: MapEvent) -> Self {
         match map_event {
@@ -187,6 +187,159 @@ impl From<MapEvent> for InputEvent {
             _ => InputEvent::MouseMove {
                 position: Point::new(0.0, 0.0),
             }, // Fallback
+        }
+    }
+}
+
+/// Unified event conversion helpers to eliminate duplication across UI backends
+pub struct EventConversion;
+
+impl EventConversion {
+    /// Convert egui response to input events (consolidates UI widget patterns)
+    #[cfg(feature = "egui")]
+    pub fn from_egui_response(response: &egui::Response) -> Vec<InputEvent> {
+        let mut events = vec![];
+        
+        // Handle mouse/pointer position for moves (both hover and drag)
+        if let Some(pos) = response.hover_pos() {
+            events.push(InputEvent::MouseMove {
+                position: Point::new(pos.x as f64, pos.y as f64),
+            });
+        }
+        
+        // Handle mouse moves during dragging (this is crucial for drag detection)
+        if response.dragged() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                events.push(InputEvent::MouseMove {
+                    position: Point::new(pos.x as f64, pos.y as f64),
+                });
+            }
+        }
+        
+        // Handle clicks
+        if response.clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                events.push(InputEvent::Click {
+                    position: Point::new(pos.x as f64, pos.y as f64),
+                    button: MouseButton::Left,
+                });
+            }
+        }
+        
+        // Handle double clicks
+        if response.double_clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                events.push(InputEvent::DoubleClick {
+                    position: Point::new(pos.x as f64, pos.y as f64),
+                });
+            }
+        }
+        
+        // Handle drag events with proper state tracking
+        if response.drag_started() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                events.push(InputEvent::DragStart {
+                    position: Point::new(pos.x as f64, pos.y as f64),
+                });
+            }
+        }
+        
+        if response.dragged() {
+            let delta = response.drag_delta();
+            if delta.length_sq() > 0.1 {
+                events.push(InputEvent::Drag {
+                    delta: Point::new(delta.x as f64, delta.y as f64),
+                });
+            }
+        }
+        
+        // Handle drag end - this is crucial for proper drag state cleanup
+        // We detect drag end when the drag was released (pointer up after dragging)
+        if response.drag_released() {
+            events.push(InputEvent::DragEnd);
+        }
+        
+        events
+    }
+    
+    /// Convert egui context input state to input events for better scroll handling
+    #[cfg(feature = "egui")]
+    pub fn from_egui_input_state(ctx: &egui::Context, rect: egui::Rect) -> Vec<InputEvent> {
+        let mut events = vec![];
+        
+        ctx.input(|i| {
+            // Handle scroll wheel events using the smooth_scroll_delta
+            let scroll_delta = i.smooth_scroll_delta;
+            if scroll_delta.length_sq() > 0.1 {
+                let pointer_pos = i.pointer.hover_pos().unwrap_or(rect.center());
+                
+                // Check if the pointer is actually over our rect
+                if rect.contains(pointer_pos) {
+                    // Convert scroll delta to zoom delta (following Leaflet's approach)
+                    let zoom_delta = if scroll_delta.y > 0.0 {
+                        1.0 // Scroll up = zoom in
+                    } else {
+                        -1.0 // Scroll down = zoom out
+                    };
+                    
+                    events.push(InputEvent::Scroll {
+                        delta: zoom_delta,
+                        position: Point::new(pointer_pos.x as f64, pointer_pos.y as f64),
+                    });
+                }
+            }
+            
+            // Also handle raw scroll events for better responsiveness
+            let raw_scroll = i.raw_scroll_delta;
+            if raw_scroll.length_sq() > 0.1 {
+                let pointer_pos = i.pointer.hover_pos().unwrap_or(rect.center());
+                
+                if rect.contains(pointer_pos) {
+                    // Use raw scroll for immediate responsiveness
+                    let zoom_delta = if raw_scroll.y > 0.0 {
+                        1.0 // Scroll up = zoom in
+                    } else {
+                        -1.0 // Scroll down = zoom out
+                    };
+                    
+                    events.push(InputEvent::Scroll {
+                        delta: zoom_delta,
+                        position: Point::new(pointer_pos.x as f64, pointer_pos.y as f64),
+                    });
+                }
+            }
+        });
+        
+        events
+    }
+    
+    /// Convert UI event types to unified input events
+    #[cfg(feature = "egui")]
+    pub fn from_ui_event(ui_event: &crate::ui::traits::UiEvent) -> Option<InputEvent> {
+        match ui_event {
+            crate::ui::traits::UiEvent::Click { position } => {
+                Some(InputEvent::Click {
+                    position: Point::new(position.lng, position.lat), // Note: UI uses lat/lng
+                    button: MouseButton::Left,
+                })
+            }
+            crate::ui::traits::UiEvent::DoubleClick { position } => {
+                Some(InputEvent::DoubleClick {
+                    position: Point::new(position.lng, position.lat),
+                })
+            }
+            crate::ui::traits::UiEvent::Drag { delta } => {
+                Some(InputEvent::Drag {
+                    delta: Point::new(delta.x as f64, delta.y as f64),
+                })
+            }
+            crate::ui::traits::UiEvent::Scroll { delta, position } => {
+                Some(InputEvent::Scroll {
+                    delta: *delta,
+                    position: Point::new(position.lng, position.lat),
+                })
+            }
+            _ => None,
         }
     }
 }

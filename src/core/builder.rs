@@ -9,12 +9,13 @@ use crate::{
     core::{
         config::{
             InteractionAnimationConfig, MapPerformanceOptions, MapPerformanceProfile,
-            TileLoadingConfig,
+            TileLoadingConfig, UnifiedMapConfig,
         },
         geo::{LatLng, Point},
         map::{Map, MapOptions},
         viewport::Viewport,
     },
+    traits::ConfigPreset,
     Result,
 };
 
@@ -83,6 +84,32 @@ impl MapBuilder {
     pub fn with_performance_options(mut self, options: MapPerformanceOptions) -> Self {
         self.performance = MapPerformanceProfile::Custom(options);
         self
+    }
+    
+    /// Apply a unified configuration preset that affects all subsystems
+    pub fn with_unified_config(mut self, config: UnifiedMapConfig) -> Self {
+        self.performance = MapPerformanceProfile::Custom(config.performance);
+        self.task_config = Some(config.task_manager);
+        self.tile_config = Some(TileLoadingConfig {
+            cache_size: 1024, // Use performance config values
+            fetch_batch_size: 6,
+            lazy_eviction: true,
+            prefetch_buffer: 2,
+            max_retries: config.tile_loader.max_retries as u32,
+            retry_delay_ms: config.tile_loader.retry_delay.as_millis() as u64,
+            exponential_backoff: true,
+            error_tile_url: None,
+            show_parent_tiles: true,
+            preload_zoom_tiles: true,
+        });
+        // Note: UI controls would be applied when creating the UI widget
+        self
+    }
+    
+    /// Apply a configuration preset using the unified system
+    pub fn with_config_preset(self, preset: ConfigPreset<UnifiedMapConfig>) -> Self {
+        let config = preset.resolve();
+        self.with_unified_config(config)
     }
 
     /// Set the tile source for the base layer
@@ -284,7 +311,7 @@ impl MapBuilder {
             viewport,
             self.map_options,
             performance_options,
-            task_config,
+            task_config.clone(),
         )?;
 
         // Apply animation configuration if provided
@@ -297,10 +324,12 @@ impl MapBuilder {
 
         // Add tile source if provided
         if let Some(_tile_source) = self.tile_source {
-            // Create a default tile layer - users can add their own tile sources via the map API
-            let tile_layer = crate::layers::tile::TileLayer::openstreetmap(
+            // Create a high-performance tile layer with background task manager
+            let bg_task_manager = std::sync::Arc::new(crate::background::BackgroundTaskManager::new(task_config));
+            let tile_layer = crate::layers::tile::TileLayer::new_with_high_performance(
                 "base_tiles".to_string(),
                 "Base Map Tiles".to_string(),
+                bg_task_manager,
             );
             map.add_layer(Box::new(tile_layer))?;
         }

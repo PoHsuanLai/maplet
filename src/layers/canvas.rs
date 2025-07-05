@@ -1,8 +1,5 @@
 use crate::{
-    core::viewport::Viewport,
     layers::base::{LayerProperties, LayerTrait, LayerType},
-    rendering::context::RenderContext,
-    Result,
 };
 
 pub struct CanvasLayer {
@@ -19,12 +16,5 @@ impl CanvasLayer {
 impl LayerTrait for CanvasLayer {
     crate::impl_layer_trait!(CanvasLayer, properties);
     crate::impl_basic_options!(properties);
-
-    fn render(
-        &mut self,
-        _context: &mut RenderContext,
-        _viewport: &Viewport,
-    ) -> Result<()> {
-        Ok(())
-    }
+    crate::impl_todo_render!();
 }

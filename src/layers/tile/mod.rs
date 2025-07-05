@@ -1,7 +1,7 @@
-//! Tile layer implementation with Leaflet-style functionality
+//! Tile layer implementation with standard web map functionality
 //! 
 //! This module provides a comprehensive tile layer that supports:
-//! - Leaflet-compatible tile loading and caching
+//! - Standard web map tile loading and caching
 //! - Smooth zoom animations with CSS-style transforms
 //! - Boundary-constrained rendering
 //! - Unified tile prefetching system

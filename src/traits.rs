@@ -7,8 +7,7 @@ use crate::{
     core::{bounds::Bounds, geo::{LatLng, Point}},
     Result,
 };
-use std::future::Future;
-use std::pin::Pin;
+use crate::prelude::{Future, Pin};
 
 /// Trait for coordinate transformation operations
 /// Unifies the coordinate transformation patterns found across the codebase
@@ -26,8 +25,9 @@ pub trait CoordinateTransform {
     fn transform_bounds(&self, bounds: Bounds, zoom: f64) -> Bounds;
 }
 
-/// Trait for background tasks that can be executed asynchronously
-/// This is an alias for AsyncProcessor that matches the BackgroundTask interface
+/// Trait for async background processing
+/// Standardizes the async patterns used across background tasks
+/// Unifies AsyncProcessor and BackgroundTask functionality
 pub trait BackgroundTask: Send + Sync {
     /// Execute the task and return the result
     fn execute(&self) -> Pin<Box<dyn Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>>;
@@ -119,8 +119,70 @@ pub trait ViewportAware {
     }
 }
 
+/// Unified geometry operations trait to eliminate duplicate math implementations
+pub trait GeometryOps<T> {
+    /// Check if bounds contain a point
+    fn contains_point(&self, point: &T) -> bool;
+    
+    /// Check if this bounds intersects with another
+    fn intersects_bounds(&self, other: &Self) -> bool;
+    
+    /// Extend bounds to include a point
+    fn extend_with_point(&mut self, point: &T);
+    
+    /// Get the center point
+    fn center(&self) -> T;
+    
+    /// Check if bounds are valid
+    fn is_valid(&self) -> bool;
+    
+    /// Get the area/size
+    fn area(&self) -> f64;
+}
+
+/// Point math operations trait to consolidate point calculations
+pub trait PointMath {
+    /// Add two points
+    fn add(&self, other: &Self) -> Self;
+    
+    /// Subtract two points
+    fn subtract(&self, other: &Self) -> Self;
+    
+    /// Multiply by scalar
+    fn multiply(&self, scalar: f64) -> Self;
+    
+    /// Calculate distance to another point
+    fn distance_to(&self, other: &Self) -> f64;
+    
+    /// Scale point by factor
+    fn scale(&self, factor: f64) -> Self;
+}
+
+/// Unified matrix transformation operations
+pub trait MatrixTransform {
+    /// Apply 2D transformation matrix
+    fn apply_transform(&self, matrix: &[f64; 6]) -> Self;
+    
+    /// Create transformation matrix from translation and scale
+    fn create_transform_matrix(translate: Point, scale: f64) -> [f64; 6] {
+        [scale, 0.0, 0.0, scale, translate.x, translate.y]
+    }
+    
+    /// Combine two transformation matrices
+    fn combine_matrices(a: &[f64; 6], b: &[f64; 6]) -> [f64; 6] {
+        [
+            a[0] * b[0] + a[2] * b[1],           // a
+            a[1] * b[0] + a[3] * b[1],           // b  
+            a[0] * b[2] + a[2] * b[3],           // c
+            a[1] * b[2] + a[3] * b[3],           // d
+            a[0] * b[4] + a[2] * b[5] + a[4],   // e
+            a[1] * b[4] + a[3] * b[5] + a[5],   // f
+        ]
+    }
+}
+
 /// Trait for configurable components
-/// Unifies configuration patterns
+/// Unifies configuration patterns across all modules
 pub trait Configurable {
     type Config: Clone;
     
@@ -133,6 +195,66 @@ pub trait Configurable {
     /// Validate configuration
     fn validate_config(config: &Self::Config) -> Result<()> {
         let _ = config; // Default implementation accepts all configs
+        Ok(())
+    }
+    
+    /// Update configuration with a partial change
+    fn update_config<F>(&mut self, updater: F) -> Result<()>
+    where
+        F: FnOnce(&mut Self::Config),
+    {
+        let mut config = self.config().clone();
+        updater(&mut config);
+        Self::validate_config(&config)?;
+        self.set_config(config)
+    }
+    
+    /// Apply a configuration preset (requires Config to implement Default)
+    fn apply_preset(preset: ConfigPreset<Self::Config>) -> Self::Config 
+    where
+        Self::Config: Default,
+    {
+        preset.resolve()
+    }
+}
+
+/// Configuration preset system to eliminate duplicate config patterns
+#[derive(Debug, Clone)]
+pub enum ConfigPreset<T> {
+    /// Use default configuration
+    Default,
+    /// Low resource usage configuration
+    LowResource,
+    /// High performance configuration
+    HighPerformance,
+    /// Custom configuration
+    Custom(T),
+}
+
+impl<T: Default> ConfigPreset<T> {
+    pub fn resolve(self) -> T {
+        match self {
+            Self::Default => T::default(),
+            Self::LowResource => T::default(), // Override in implementations
+            Self::HighPerformance => T::default(), // Override in implementations  
+            Self::Custom(config) => config,
+        }
+    }
+}
+
+/// Unified configuration builder pattern
+pub trait ConfigBuilder<T> {
+    /// Create a new builder with default values
+    fn new() -> Self;
+    
+    /// Apply a preset configuration
+    fn with_preset(preset: ConfigPreset<T>) -> Self;
+    
+    /// Build the final configuration
+    fn build(self) -> T;
+    
+    /// Validate the configuration being built
+    fn validate(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -239,7 +361,7 @@ pub trait LayerOperations: Send + Sync {
     /// Check if layer intersects with given bounds
     fn intersects_bounds(&self, bounds: &crate::core::geo::LatLngBounds) -> bool {
         if let Some(layer_bounds) = self.bounds() {
-            layer_bounds.intersects(bounds)
+            layer_bounds.intersects_bounds(bounds)
         } else {
             true
         }
@@ -254,4 +376,61 @@ pub trait LayerOperations: Send + Sync {
     /// Dynamic casting support
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-} 
+}
+
+/// Unified retry logic for error handling
+pub trait RetryLogic {
+    fn should_retry(&self, max_retries: u32, retry_delay_ms: u64, exponential_backoff: bool) -> bool;
+    fn get_retry_count(&self) -> u32;
+    fn get_last_retry_time(&self) -> Option<std::time::Instant>;
+}
+
+/// Standard retry logic implementation
+pub fn should_retry_with_backoff(
+    retry_count: u32,
+    last_retry_time: Option<std::time::Instant>,
+    max_retries: u32,
+    retry_delay_ms: u64,
+    exponential_backoff: bool,
+) -> bool {
+    if retry_count >= max_retries {
+        return false;
+    }
+
+    if let Some(last_retry) = last_retry_time {
+        let delay_multiplier = if exponential_backoff {
+            2_u64.pow(retry_count)
+        } else {
+            1
+        };
+        let required_delay = retry_delay_ms * delay_multiplier;
+        last_retry.elapsed().as_millis() >= required_delay as u128
+    } else {
+        true
+    }
+}
+
+/// Unified interpolation trait that consolidates all Lerp implementations
+pub trait Lerp {
+    fn lerp(&self, other: &Self, t: f64) -> Self;
+}
+
+impl Lerp for f64 {
+    fn lerp(&self, other: &Self, t: f64) -> Self {
+        self + (other - self) * t
+    }
+}
+
+impl Lerp for crate::core::geo::Point {
+    fn lerp(&self, other: &Self, t: f64) -> Self {
+        use crate::core::geo::Point;
+        Point::new(self.x.lerp(&other.x, t), self.y.lerp(&other.y, t))
+    }
+}
+
+impl Lerp for crate::core::geo::LatLng {
+    fn lerp(&self, other: &Self, t: f64) -> Self {
+        use crate::core::geo::LatLng;
+        LatLng::new(self.lat.lerp(&other.lat, t), self.lng.lerp(&other.lng, t))
+    }
+}

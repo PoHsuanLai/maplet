@@ -1,13 +1,10 @@
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, VecDeque};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use super::source::TileSource;
 use crate::core::geo::TileCoord;
 use crate::core::viewport::Viewport;
-use crate::prelude::HashSet;
+use crate::prelude::{HashSet, Ordering, BinaryHeap, VecDeque, Arc, Mutex, Duration, Instant};
+use crate::traits::GeometryOps;
 use crate::Result;
 use once_cell::sync::Lazy;
 
@@ -22,22 +19,22 @@ pub(crate) static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         .connection_verbose(true)
         .tcp_keepalive(std::time::Duration::from_secs(30))
         .pool_idle_timeout(std::time::Duration::from_secs(90))
-        .pool_max_idle_per_host(8)
+        .pool_max_idle_per_host(16)
         .build()
         .expect("failed to build reqwest async client")
 });
 
 /// Priority for tile loading (higher number = higher priority)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TilePriority {
-    /// Currently visible tiles (highest priority)
-    Visible = 100,
-    /// One ring around visible area
-    Adjacent = 50,
-    /// Prefetch tiles for predicted movement
-    Prefetch = 10,
     /// Background/low priority
     Background = 1,
+    /// Prefetch tiles for predicted movement
+    Prefetch = 10,
+    /// One ring around visible area
+    Adjacent = 50,
+    /// Currently visible tiles (highest priority)
+    Visible = 100,
 }
 
 /// A tile loading task with priority
@@ -67,7 +64,7 @@ impl PartialOrd for TileTask {
 impl Ord for TileTask {
     fn cmp(&self, other: &Self) -> Ordering {
         // Higher priority first, then earlier sequence number
-        match (self.priority as u8).cmp(&(other.priority as u8)) {
+        match self.priority.cmp(&other.priority) {
             Ordering::Equal => other.sequence.cmp(&self.sequence),
             other => other,
         }
@@ -81,7 +78,7 @@ pub struct TileResult {
     pub data: Result<Vec<u8>>,
 }
 
-/// Configuration for the tile loader
+/// Configuration for the tile loader - MUCH more aggressive defaults
 #[derive(Debug, Clone)]
 pub struct TileLoaderConfig {
     /// Maximum concurrent tile downloads
@@ -95,9 +92,36 @@ pub struct TileLoaderConfig {
 impl Default for TileLoaderConfig {
     fn default() -> Self {
         Self {
-            max_concurrent: 64,
+            max_concurrent: 128,
             max_retries: 2,
+            retry_delay: std::time::Duration::from_millis(25),
+        }
+    }
+}
+
+/// Unified configuration presets for TileLoaderConfig
+impl TileLoaderConfig {
+    pub fn low_resource() -> Self {
+        Self {
+            max_concurrent: 16,
+            max_retries: 1,
             retry_delay: std::time::Duration::from_millis(50),
+        }
+    }
+    
+    pub fn high_performance() -> Self {
+        Self {
+            max_concurrent: 256,
+            max_retries: 3,
+            retry_delay: std::time::Duration::from_millis(10),
+        }
+    }
+    
+    pub fn for_testing() -> Self {
+        Self {
+            max_concurrent: 4,
+            max_retries: 0,
+            retry_delay: std::time::Duration::from_millis(500),
         }
     }
 }
@@ -120,8 +144,8 @@ pub struct MovementPattern {
 impl Default for MovementPattern {
     fn default() -> Self {
         Self {
-            recent_centers: VecDeque::with_capacity(10),
-            recent_zooms: VecDeque::with_capacity(5),
+            recent_centers: VecDeque::with_capacity(20),
+            recent_zooms: VecDeque::with_capacity(10),
             velocity: None,
             predicted_center: None,
             prediction_confidence: 0.0,
@@ -134,8 +158,8 @@ impl MovementPattern {
     pub fn update(&mut self, viewport: &Viewport) {
         let now = Instant::now();
 
-        // Clean old entries (older than 5 seconds)
-        let cutoff = now - Duration::from_secs(5);
+        // Clean old entries (older than 3 seconds for more aggressive prediction)
+        let cutoff = now - Duration::from_secs(3);
         self.recent_centers.retain(|(_, time)| *time > cutoff);
         self.recent_zooms.retain(|(_, time)| *time > cutoff);
 
@@ -143,11 +167,11 @@ impl MovementPattern {
         self.recent_centers.push_back((viewport.center, now));
         self.recent_zooms.push_back((viewport.zoom, now));
 
-        // Keep reasonable limits
-        if self.recent_centers.len() > 10 {
+        // Keep reasonable limits but allow more data for better prediction
+        if self.recent_centers.len() > 20 {
             self.recent_centers.pop_front();
         }
-        if self.recent_zooms.len() > 5 {
+        if self.recent_zooms.len() > 10 {
             self.recent_zooms.pop_front();
         }
 
@@ -175,13 +199,14 @@ impl MovementPattern {
                 let lat_diff = curr_pos.lat - prev_pos.lat;
                 let lng_diff = curr_pos.lng - prev_pos.lng;
 
-                // Convert to approximate pixel velocity (rough approximation)
-                let pixel_per_degree = 111_000.0; // meters per degree at equator
-                let velocity_x = lng_diff * pixel_per_degree / time_diff;
-                let velocity_y = lat_diff * pixel_per_degree / time_diff;
+                // Convert to approximate pixel movement
+                let pixel_velocity = crate::core::geo::Point::new(
+                    lng_diff / time_diff * 111320.0,
+                    lat_diff / time_diff * 111320.0,
+                );
 
-                total_velocity.x += velocity_x;
-                total_velocity.y += velocity_y;
+                total_velocity.x += pixel_velocity.x;
+                total_velocity.y += pixel_velocity.y;
                 count += 1;
             }
         }
@@ -197,68 +222,114 @@ impl MovementPattern {
     fn predict_next_position(&mut self) {
         if let Some(velocity) = self.velocity {
             if let Some((last_center, _last_time)) = self.recent_centers.back() {
-                // Predict position 1 second ahead
+                // Predict where the user will be in 1 second (more aggressive)
                 let prediction_time = 1.0;
-                let pixel_per_degree = 111_000.0;
-
-                let predicted_lat =
-                    last_center.lat + (velocity.y * prediction_time) / pixel_per_degree;
-                let predicted_lng =
-                    last_center.lng + (velocity.x * prediction_time) / pixel_per_degree;
-
-                self.predicted_center =
-                    Some(crate::core::geo::LatLng::new(predicted_lat, predicted_lng));
-
-                // Calculate confidence based on velocity consistency
-                let speed = (velocity.x.powi(2) + velocity.y.powi(2)).sqrt();
-                self.prediction_confidence = if speed > 10.0 {
-                    // Moving fast enough to predict
-                    (speed / 1000.0).min(1.0) // Higher speed = higher confidence, capped at 1.0
+                
+                let predicted_lat = last_center.lat + (velocity.y * prediction_time) / 111320.0;
+                let predicted_lng = last_center.lng + (velocity.x * prediction_time) / 111320.0;
+                
+                self.predicted_center = Some(crate::core::geo::LatLng::new(predicted_lat, predicted_lng));
+                
+                // Calculate confidence based on movement consistency
+                let velocity_magnitude = (velocity.x.powi(2) + velocity.y.powi(2)).sqrt();
+                self.prediction_confidence = if velocity_magnitude > 100.0 {
+                    (0.8_f64).min(velocity_magnitude / 1000.0)
                 } else {
-                    0.0
+                    0.3
                 };
             }
+        } else {
+            self.predicted_center = None;
+            self.prediction_confidence = 0.0;
         }
     }
 
-    /// Get tiles to prefetch based on movement prediction
+    /// Get tiles to prefetch based on predicted movement - MUCH more aggressive
     pub fn get_prefetch_tiles(&self, current_viewport: &Viewport) -> Vec<TileCoord> {
         let mut prefetch_tiles = Vec::new();
+        let current_zoom = current_viewport.zoom.round() as u32;
 
+        // 1. Current zoom level with large buffer
+        prefetch_tiles.extend(self.get_aggressive_buffer_tiles(current_viewport, current_zoom, 6));
+
+        // 2. Predicted position tiles if we have confidence
         if let Some(predicted_center) = self.predicted_center {
-            if self.prediction_confidence > 0.3 {
-                // Get tiles for predicted viewport
-                let zoom = current_viewport.zoom.floor() as u8;
-                let tiles_per_axis = 1u32 << zoom;
+            if self.prediction_confidence > 0.2 {
+                let predicted_viewport = Viewport::new(
+                    predicted_center,
+                    current_viewport.zoom,
+                    current_viewport.size,
+                );
+                prefetch_tiles.extend(self.get_aggressive_buffer_tiles(&predicted_viewport, current_zoom, 4));
+            }
+        }
 
-                // Convert predicted center to tile coordinates
-                let lat_rad = predicted_center.lat.to_radians();
-                let x = (predicted_center.lng + 180.0) / 360.0 * tiles_per_axis as f64;
-                let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI)
-                    / 2.0
-                    * tiles_per_axis as f64;
+        // 3. Multiple zoom levels around current (like Leaflet but more aggressive)
+        for zoom_offset in -2..=2i32 {
+            let target_zoom = (current_zoom as i32 + zoom_offset).clamp(0, 18) as u32;
+            if target_zoom != current_zoom {
+                prefetch_tiles.extend(self.get_zoom_level_tiles(current_viewport, target_zoom, 3));
+            }
+        }
 
-                let center_x = x as u32;
-                let center_y = y as u32;
-
-                // Add surrounding tiles
-                let radius = 2; // Prefetch 2 tiles in each direction
-                for dx in -radius..=radius {
-                    for dy in -radius..=radius {
-                        let tile_x = ((center_x as i32 + dx) as u32) % tiles_per_axis;
-                        let tile_y = ((center_y as i32 + dy).max(0) as u32).min(tiles_per_axis - 1);
-
-                        prefetch_tiles.push(TileCoord {
-                            x: tile_x,
-                            y: tile_y,
-                            z: zoom,
-                        });
-                    }
+        // 4. Movement direction extrapolation (very aggressive)
+        if let Some(velocity) = self.velocity {
+            let velocity_magnitude = (velocity.x.powi(2) + velocity.y.powi(2)).sqrt();
+            if velocity_magnitude > 50.0 {
+                // Prefetch in movement direction
+                for multiplier in 1..=3 {
+                    let time_ahead = multiplier as f64 * 0.5;
+                    let predicted_lat = current_viewport.center.lat + (velocity.y * time_ahead) / 111320.0;
+                    let predicted_lng = current_viewport.center.lng + (velocity.x * time_ahead) / 111320.0;
+                    
+                    let ahead_viewport = Viewport::new(
+                        crate::core::geo::LatLng::new(predicted_lat, predicted_lng),
+                        current_viewport.zoom,
+                        current_viewport.size,
+                    );
+                    prefetch_tiles.extend(self.get_aggressive_buffer_tiles(&ahead_viewport, current_zoom, 2));
                 }
             }
         }
 
-        prefetch_tiles
+        // Remove duplicates and limit total count
+        let mut unique_tiles: HashSet<TileCoord> = HashSet::default();
+        for tile in prefetch_tiles {
+            unique_tiles.insert(tile);
+        }
+
+        unique_tiles.into_iter().take(2000).collect()
+    }
+
+    /// Get tiles with aggressive buffer around viewport
+    fn get_aggressive_buffer_tiles(&self, viewport: &Viewport, zoom: u32, buffer: u32) -> Vec<TileCoord> {
+        let bounds = viewport.bounds();
+        
+        let nw_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
+        let se_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
+        
+        let tile_size = 256.0;
+        let min_x = (nw_proj.x / tile_size).floor() as i32 - buffer as i32;
+        let max_x = (se_proj.x / tile_size).ceil() as i32 + buffer as i32;
+        let min_y = (nw_proj.y / tile_size).floor() as i32 - buffer as i32;
+        let max_y = (se_proj.y / tile_size).ceil() as i32 + buffer as i32;
+
+        let max_tile = (256.0 * 2_f64.powf(zoom as f64) / tile_size) as i32;
+
+        let mut tiles = Vec::new();
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                if x >= 0 && y >= 0 && x < max_tile && y < max_tile {
+                    tiles.push(TileCoord { x: x as u32, y: y as u32, z: zoom as u8 });
+                }
+            }
+        }
+        tiles
+    }
+
+    /// Get tiles for a specific zoom level
+    fn get_zoom_level_tiles(&self, viewport: &Viewport, zoom: u32, buffer: u32) -> Vec<TileCoord> {
+        self.get_aggressive_buffer_tiles(viewport, zoom, buffer)
     }
 }
 
@@ -414,6 +485,10 @@ pub struct TileLoader {
     prefetch_tiles: Arc<Mutex<HashSet<TileCoord>>>,
     /// Currently pending/downloading tiles to prevent duplicates
     pending_tiles: Arc<Mutex<HashSet<TileCoord>>>,
+    /// Network performance metrics
+    network_metrics: Arc<Mutex<NetworkMetrics>>,
+    /// Background task manager for aggressive prefetching
+    bg_task_manager: Option<Arc<crate::background::BackgroundTaskManager>>,
 }
 
 impl TileLoader {
@@ -440,6 +515,8 @@ impl TileLoader {
             last_viewport: Arc::new(Mutex::new(None)),
             prefetch_tiles: Arc::new(Mutex::new(HashSet::default())),
             pending_tiles: Arc::new(Mutex::new(HashSet::default())),
+            network_metrics: Arc::new(Mutex::new(NetworkMetrics::default())),
+            bg_task_manager: None,
         }
     }
 
@@ -487,20 +564,34 @@ impl TileLoader {
         // Create tasks for filtered tiles
         let tasks: Result<Vec<_>> = filtered_coords
             .into_iter()
-            .map(|coord| {
+            .enumerate()
+            .map(|(i, coord)| {
                 let url = source.url(coord);
                 Ok(TileTask {
                     coord,
                     url,
                     priority,
-                    sequence,
+                    // For visible tiles, use reverse sequence to process in queue order
+                    sequence: if priority == TilePriority::Visible { 
+                        sequence.saturating_sub(i as u64)
+                    } else { 
+                        sequence + i as u64 
+                    },
                 })
             })
             .collect();
 
-        let tasks = tasks?;
+        let mut tasks = tasks?;
 
-        // Send all tasks in a batch - they will be processed concurrently
+        // Sort by priority (visible tiles first) and then by sequence (like Leaflet's distance sorting)
+        tasks.sort_by(|a, b| {
+            match b.priority.cmp(&a.priority) {
+                std::cmp::Ordering::Equal => a.sequence.cmp(&b.sequence),
+                other => other,
+            }
+        });
+
+        // Send all tasks in priority order - visible tiles get processed first
         for task in tasks {
             let coord = task.coord; // Store coord before moving task
             if let Err(e) = self.task_tx.send(task) {
@@ -560,6 +651,28 @@ impl TileLoader {
         loader
     }
 
+    /// Enable background task manager for ultra-aggressive prefetching
+    pub fn with_background_task_manager(mut self, bg_task_manager: Arc<crate::background::BackgroundTaskManager>) -> Self {
+        self.bg_task_manager = Some(bg_task_manager);
+        self
+    }
+
+    /// Create a tile loader with high-performance preset and background task manager
+    pub fn with_high_performance_preset(bg_task_manager: Arc<crate::background::BackgroundTaskManager>) -> Self {
+        let config = TileLoaderConfig::high_performance();
+        let adaptive_config = AdaptiveConfig {
+            enabled: true,
+            max_prefetch_distance: 8, // Very aggressive
+            min_prefetch_confidence: 0.1, // Lower threshold
+            max_prefetch_tiles: 3000, // Much higher limit
+            zoom_priority_adjustment: true,
+            network_adaptive: true,
+        };
+        
+        Self::with_adaptive_config(config, adaptive_config)
+            .with_background_task_manager(bg_task_manager)
+    }
+
     /// Update movement pattern with new viewport and trigger prefetching
     pub fn update_viewport(&self, viewport: &Viewport) {
         // Update movement pattern tracking
@@ -597,6 +710,11 @@ impl TileLoader {
             // Limit the number of prefetch tiles
             let limited_coords: Vec<_> = prefetch_coords.into_iter().take(max_tiles).collect();
 
+            // If background task manager is available, use it for ultra-aggressive prefetching
+            if let Some(bg_task_manager) = &self.bg_task_manager {
+                self.trigger_background_prefetch(bg_task_manager, &limited_coords, viewport);
+            }
+
             // Update prefetch tracking
             if let Ok(mut prefetch_tiles) = self.prefetch_tiles.lock() {
                 prefetch_tiles.clear();
@@ -612,23 +730,44 @@ impl TileLoader {
         }
     }
 
+    /// Trigger intelligent background prefetching using the background task manager
+    fn trigger_background_prefetch(
+        &self,
+        bg_task_manager: &Arc<crate::background::BackgroundTaskManager>,
+        coords: &[TileCoord],
+        viewport: &Viewport,
+    ) {
+        // Create a background task for intelligent tile prefetching
+        let prefetch_task = TilePrefetchTask::new(
+            format!("prefetch_{}_{}", viewport.center.lat, viewport.center.lng),
+            coords.to_vec(),
+            viewport.clone(),
+            self.network_metrics.clone(),
+        ).with_priority(crate::background::TaskPriority::High);
+
+        // Submit the task with high priority
+        if let Err(e) = bg_task_manager.submit_task(Arc::new(prefetch_task)) {
+            #[cfg(feature = "debug")]
+            log::warn!("Failed to submit background prefetch task: {}", e);
+        }
+    }
+
     /// Get basic prefetch tiles when movement pattern is not available
     fn get_basic_prefetch_tiles(&self, viewport: &Viewport, zoom: u32) -> Vec<TileCoord> {
         let bounds = viewport.bounds();
-        let scale = 2.0_f64.powi(zoom as i32);
 
-        // Get visible tiles with padding
+        // Use unified projection instead of duplicate Web Mercator calculations
+        let nw_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
+        let se_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
+        
+        let tile_size = 256.0;
         let padding = 1; // 1 tile padding around visible area
-        let min_x = ((bounds.south_west.lng + 180.0) / 360.0 * scale).floor() as i32 - padding;
-        let max_x = ((bounds.north_east.lng + 180.0) / 360.0 * scale).ceil() as i32 + padding;
-        
-        let lat_rad_north = bounds.north_east.lat.to_radians();
-        let lat_rad_south = bounds.south_west.lat.to_radians();
-        
-        let min_y = ((1.0 - (lat_rad_north.tan() + (1.0 / lat_rad_north.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).floor() as i32 - padding;
-        let max_y = ((1.0 - (lat_rad_south.tan() + (1.0 / lat_rad_south.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).ceil() as i32 + padding;
+        let min_x = (nw_proj.x / tile_size).floor() as i32 - padding;
+        let max_x = (se_proj.x / tile_size).ceil() as i32 + padding;
+        let min_y = (nw_proj.y / tile_size).floor() as i32 - padding;
+        let max_y = (se_proj.y / tile_size).ceil() as i32 + padding;
 
-        let max_tile = (2.0_f64.powi(zoom as i32)) as i32;
+        let max_tile = (256.0 * 2_f64.powf(zoom as f64) / tile_size) as i32;
 
         let mut tiles = Vec::new();
         for x in min_x..=max_x {
@@ -659,16 +798,16 @@ impl TileLoader {
     /// Get tiles for a specific zoom level covering the viewport
     fn get_zoom_level_tiles(&self, viewport: &Viewport, zoom: u32) -> Vec<TileCoord> {
         let bounds = viewport.bounds();
-        let scale = 2.0_f64.powi(zoom as i32);
 
-        let min_x = ((bounds.south_west.lng + 180.0) / 360.0 * scale).floor() as u32;
-        let max_x = ((bounds.north_east.lng + 180.0) / 360.0 * scale).ceil() as u32;
+        // Use unified projection instead of duplicate Web Mercator calculations
+        let nw_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
+        let se_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
         
-        let lat_rad_north = bounds.north_east.lat.to_radians();
-        let lat_rad_south = bounds.south_west.lat.to_radians();
-        
-        let min_y = ((1.0 - (lat_rad_north.tan() + (1.0 / lat_rad_north.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).floor() as u32;
-        let max_y = ((1.0 - (lat_rad_south.tan() + (1.0 / lat_rad_south.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).ceil() as u32;
+        let tile_size = 256.0;
+        let min_x = (nw_proj.x / tile_size).floor() as u32;
+        let max_x = (se_proj.x / tile_size).ceil() as u32;
+        let min_y = (nw_proj.y / tile_size).floor() as u32;
+        let max_y = (se_proj.y / tile_size).ceil() as u32;
 
         let mut tiles = Vec::new();
         for x in min_x..=max_x {
@@ -702,7 +841,7 @@ impl TileLoader {
         .sqrt();
 
         // Check if tile intersects with viewport
-        if viewport_bounds.contains(&tile_center) {
+        if viewport_bounds.contains_point(&tile_center) {
             TilePriority::Visible
         } else if distance < 0.1 {
             // Adjacent to viewport
@@ -716,11 +855,15 @@ impl TileLoader {
     }
 
     fn tile_coord_to_lat_lng(&self, coord: &TileCoord) -> crate::core::geo::LatLng {
-        let n = 2.0_f64.powi(coord.z as i32);
-        let lng = coord.x as f64 / n * 360.0 - 180.0;
-        let lat_rad = std::f64::consts::PI * (1.0 - 2.0 * coord.y as f64 / n);
-        let lat = lat_rad.sinh().atan().to_degrees();
-        crate::core::geo::LatLng::new(lat, lng)
+        // Use unified unprojection instead of duplicate Web Mercator calculations
+        let tile_size = 256.0;
+        let pixel_x = coord.x as f64 * tile_size + tile_size / 2.0;
+        let pixel_y = coord.y as f64 * tile_size + tile_size / 2.0;
+        let pixel_point = crate::core::geo::Point::new(pixel_x, pixel_y);
+        
+        // Use a default viewport for coordinate conversion (we only need the projection math)
+        let temp_viewport = crate::core::viewport::Viewport::default();
+        temp_viewport.unproject(&pixel_point, Some(coord.z as f64))
     }
 
     /// Get zoom trend for smart prefetching (positive = zooming in, negative = zooming out)
@@ -765,6 +908,126 @@ impl TileLoader {
             pending.clear();
         }
     }
+    
+    /// Update the tile loader configuration (creates new loader with updated config)
+    pub fn update_config(&self, new_config: TileLoaderConfig) -> Self {
+        Self::new(new_config)
+    }
+}
+
+/// Background task for intelligent tile prefetching based on movement patterns
+pub struct TilePrefetchTask {
+    task_id: String,
+    coords: Vec<TileCoord>,
+    viewport: Viewport,
+    network_metrics: Arc<Mutex<NetworkMetrics>>,
+    priority: crate::background::TaskPriority,
+}
+
+impl TilePrefetchTask {
+    pub fn new(
+        task_id: String,
+        coords: Vec<TileCoord>,
+        viewport: Viewport,
+        network_metrics: Arc<Mutex<NetworkMetrics>>,
+    ) -> Self {
+        Self {
+            task_id,
+            coords,
+            viewport,
+            network_metrics,
+            priority: crate::background::TaskPriority::High,
+        }
+    }
+
+    pub fn with_priority(mut self, priority: crate::background::TaskPriority) -> Self {
+        self.priority = priority;
+        self
+    }
+}
+
+impl crate::background::BackgroundTask for TilePrefetchTask {
+    fn execute(
+        &self,
+    ) -> crate::prelude::Pin<Box<dyn crate::prelude::Future<Output = crate::Result<Box<dyn std::any::Any + Send>>> + Send + '_>> {
+        Box::pin(async move {
+            let coords = self.coords.clone();
+            let viewport = self.viewport.clone();
+            let network_metrics = self.network_metrics.clone();
+
+            // Execute prefetch logic in background
+            let result = crate::background::tasks::AsyncExecutor::execute_blocking_boxed(move || {
+                // Simulate aggressive prefetching analysis
+                let mut prefetch_results = Vec::new();
+                
+                // Get network condition to adjust strategy
+                let network_condition = if let Ok(metrics) = network_metrics.lock() {
+                    metrics.condition.clone()
+                } else {
+                    NetworkCondition::Good
+                };
+
+                // Adjust prefetch strategy based on network condition
+                let coords_len = coords.len();
+                let coords_to_prefetch = match network_condition {
+                    NetworkCondition::Good => coords, // All tiles
+                    NetworkCondition::Fair => coords.into_iter().take(coords_len * 2 / 3).collect(),
+                    NetworkCondition::Poor => coords.into_iter().take(coords_len / 2).collect(),
+                };
+
+                // Group tiles by zoom level for efficient prefetching
+                let mut zoom_groups = std::collections::HashMap::new();
+                for coord in coords_to_prefetch {
+                    zoom_groups.entry(coord.z).or_insert_with(Vec::new).push(coord);
+                }
+
+                // Prioritize current zoom level and adjacent levels
+                let current_zoom = viewport.zoom.round() as u8;
+                let mut priority_order = vec![current_zoom];
+                
+                // Add adjacent zoom levels
+                if current_zoom > 0 {
+                    priority_order.push(current_zoom - 1);
+                }
+                if current_zoom < 18 {
+                    priority_order.push(current_zoom + 1);
+                }
+
+                // Add other zoom levels
+                for zoom in zoom_groups.keys() {
+                    if !priority_order.contains(zoom) {
+                        priority_order.push(*zoom);
+                    }
+                }
+
+                // Build prefetch recommendation
+                for zoom in priority_order {
+                    if let Some(tiles) = zoom_groups.get(&zoom) {
+                        prefetch_results.extend(tiles.iter().cloned());
+                    }
+                }
+
+                Ok(prefetch_results)
+            }).await?;
+
+            Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
+        })
+    }
+
+    fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    fn priority(&self) -> crate::background::TaskPriority {
+        self.priority
+    }
+
+    fn estimated_duration(&self) -> std::time::Duration {
+        // Estimation based on number of tiles to analyze
+        let base_time = std::time::Duration::from_millis(1);
+        let coord_factor = (self.coords.len() / 100).max(1) as u32;
+        base_time * coord_factor.min(50) // Cap at 50ms
+    }
 }
 
 /// Background worker that processes tile loading tasks
@@ -772,8 +1035,8 @@ struct TileWorker {
     task_rx: Receiver<TileTask>,
     result_tx: Sender<TileResult>,
     config: TileLoaderConfig,
-    /// Simple semaphore to limit concurrent downloads (non-tokio)
-    semaphore: Arc<std::sync::Mutex<usize>>,
+    /// Unified semaphore to limit concurrent downloads
+    semaphore: crate::runtime::async_utils::Semaphore,
     /// Priority queue of pending tasks
     task_queue: BinaryHeap<TileTask>,
 }
@@ -784,7 +1047,7 @@ impl TileWorker {
         result_tx: Sender<TileResult>,
         config: TileLoaderConfig,
     ) -> Self {
-        let semaphore = Arc::new(std::sync::Mutex::new(config.max_concurrent));
+        let semaphore = crate::runtime::async_utils::Semaphore::new(config.max_concurrent);
 
         Self {
             task_rx,
@@ -809,19 +1072,8 @@ impl TileWorker {
 
             // Process the highest priority task if we have capacity
             if let Some(task) = self.task_queue.pop() {
-                // Check semaphore availability
-                let can_start = {
-                    if let Ok(mut count) = self.semaphore.lock() {
-                        if *count > 0 {
-                            *count -= 1;
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                };
+                // Check semaphore availability using unified semaphore
+                let can_start = self.semaphore.try_acquire();
 
                 if can_start {
                     let result_tx = self.result_tx.clone();
@@ -841,10 +1093,8 @@ impl TileWorker {
                         // Send result back
                         let _ = result_tx.send(tile_result);
 
-                        // Release semaphore permit
-                        if let Ok(mut count) = semaphore.lock() {
-                            *count += 1;
-                        }
+                        // Release semaphore permit using unified semaphore
+                        semaphore.release();
                     });
                 } else {
                     // No capacity, put task back
@@ -852,22 +1102,8 @@ impl TileWorker {
                 }
             }
 
-            // Small delay to yield control (non-blocking)
-            #[cfg(feature = "tokio-runtime")]
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-            #[cfg(not(feature = "tokio-runtime"))]
-            {
-                // Use a simple async delay that doesn't block
-                let start = std::time::Instant::now();
-                while start.elapsed() < std::time::Duration::from_millis(10) {
-                    // Check for new tasks during delay
-                    if let Ok(_) = self.task_rx.try_recv() {
-                        break;
-                    }
-                    std::hint::spin_loop();
-                }
-            }
+            // Small delay to yield control using unified async delay
+            crate::runtime::async_utils::async_delay(std::time::Duration::from_millis(10)).await;
 
             // Check if we should continue (channel still open)
             if self.task_queue.is_empty() {
