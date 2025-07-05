@@ -81,10 +81,8 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for ClusterMarkersTask<T> 
     }
 
     fn estimated_duration(&self) -> std::time::Duration {
-        // Estimate based on number of items (grid clustering is O(n))
-        let base_time = std::time::Duration::from_millis(5);
-        let item_factor = (self.items.len() / 1000).max(1) as u32;
-        base_time * item_factor.min(20) // Cap at 100ms
+        // Use unified duration estimation helper
+        crate::background::tasks::estimate_duration_from_item_count(self.items.len(), 5, 1)
     }
 }
 
@@ -160,10 +158,8 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for UpdateClustersTask<T> 
     }
 
     fn estimated_duration(&self) -> std::time::Duration {
-        // Faster than initial clustering since we're reusing data
-        let base_time = std::time::Duration::from_millis(10);
-        let cluster_factor = (self.existing_clusters.len() / 100).max(1) as u32;
-        base_time * cluster_factor.min(15) // Cap at 150ms
+        // Use unified duration estimation helper for cluster updates
+        crate::background::tasks::estimate_duration_from_item_count(self.existing_clusters.len(), 10, 2)
     }
 }
 

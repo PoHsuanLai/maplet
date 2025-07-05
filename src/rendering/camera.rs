@@ -230,10 +230,12 @@ impl Camera {
         (min, max)
     }
 
-    /// Check if a point is visible in the camera frustum
+    /// Check if a point is visible in the camera frustum using unified geometry operations
     pub fn is_point_visible(&mut self, point: Point) -> bool {
+        use crate::traits::GeometryOps;
         let (min, max) = self.get_frustum_bounds();
-        point.x >= min.x && point.x <= max.x && point.y >= min.y && point.y <= max.y
+        let frustum_bounds = crate::core::bounds::Bounds::new(min, max);
+        frustum_bounds.contains_point(&point)
     }
 
     /// Pan the camera by a screen space offset

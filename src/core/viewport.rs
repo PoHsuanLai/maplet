@@ -1,4 +1,5 @@
 use crate::core::geo::{LatLng, LatLngBounds, Point};
+use crate::traits::{PointMath, GeometryOps};
 use serde::{Deserialize, Serialize};
 
 /// Manages the current view of the map: center, zoom, and screen dimensions
@@ -16,15 +17,15 @@ pub struct Viewport {
     pub max_zoom: f64,
     /// Pixel origin for coordinate transformations (to avoid precision issues)
     pixel_origin: Option<Point>,
-    /// Maximum bounds for the map (Leaflet's maxBounds)
+    /// Maximum bounds for the map
     max_bounds: Option<LatLngBounds>,
     /// Viscosity for bounds enforcement (0.0 = loose, 1.0 = solid)
     max_bounds_viscosity: f64,
-    /// Current transform for zoom animations (like Leaflet's CSS transforms)
+    /// Current transform for zoom animations (CSS-style transforms)
     pub current_transform: Transform,
 }
 
-/// Transform state for animations (like Leaflet's CSS transforms)
+/// Transform state for animations (CSS-style transforms)
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     /// Translation in pixels
@@ -99,7 +100,7 @@ impl Viewport {
         }
     }
 
-    /// Sets the maximum bounds for the map (like Leaflet's setMaxBounds)
+    /// Sets the maximum bounds for the map
     pub fn set_max_bounds(&mut self, bounds: Option<LatLngBounds>, viscosity: Option<f64>) {
         self.max_bounds = bounds;
         self.max_bounds_viscosity = viscosity.unwrap_or(0.0).clamp(0.0, 1.0);
@@ -146,37 +147,40 @@ impl Viewport {
     }
 
     /// Projects a LatLng to world pixel coordinates at the given zoom level
-    /// This matches Leaflet's CRS.EPSG3857.latLngToPoint method
+    /// This is the unified Web Mercator projection implementation (EPSG:3857)
     pub fn project(&self, lat_lng: &LatLng, zoom: Option<f64>) -> Point {
         let z = zoom.unwrap_or(self.zoom);
         let scale = 256.0 * 2_f64.powf(z);
 
-        // Use the core Web Mercator projection from geo.rs
-        let mercator = lat_lng.to_mercator();
+        // Standard Web Mercator projection (EPSG:3857)
+        const EARTH_RADIUS: f64 = 6378137.0;
+        let x = lat_lng.lng.to_radians() * EARTH_RADIUS;
+        let y = ((std::f64::consts::PI / 4.0 + lat_lng.lat.to_radians() / 2.0).tan().ln()) * EARTH_RADIUS;
         
         // Convert from raw Mercator coordinates to pixel coordinates at the given zoom
-        // Leaflet's transformation: scale = 0.5 / (π * R), offset = 0.5
-        // Where R = 6378137 (earth radius)
-        const EARTH_RADIUS: f64 = 6378137.0;
-        let x = (mercator.x + std::f64::consts::PI * EARTH_RADIUS) / (2.0 * std::f64::consts::PI * EARTH_RADIUS) * scale;
-        let y = (std::f64::consts::PI * EARTH_RADIUS - mercator.y) / (2.0 * std::f64::consts::PI * EARTH_RADIUS) * scale;
+        // Standard transformation: scale = 0.5 / (π * R), offset = 0.5
+        let pixel_x = (x + std::f64::consts::PI * EARTH_RADIUS) / (2.0 * std::f64::consts::PI * EARTH_RADIUS) * scale;
+        let pixel_y = (-y + std::f64::consts::PI * EARTH_RADIUS) / (2.0 * std::f64::consts::PI * EARTH_RADIUS) * scale;
 
-        Point::new(x, y)
+        Point::new(pixel_x, pixel_y)
     }
 
     /// Unprojects world pixel coordinates back to LatLng at the given zoom level
-    /// This matches Leaflet's CRS.EPSG3857.pointToLatLng method
-    pub fn unproject(&self, point: &Point, zoom: Option<f64>) -> LatLng {
+    /// This is the unified Web Mercator inverse projection implementation (EPSG:3857)
+    pub fn unproject(&self, pixel: &Point, zoom: Option<f64>) -> LatLng {
         let z = zoom.unwrap_or(self.zoom);
         let scale = 256.0 * 2_f64.powf(z);
 
-        // Convert pixel coordinates back to raw Mercator coordinates
-        const EARTH_RADIUS: f64 = 6378137.0;
-        let mercator_x = (point.x / scale) * (2.0 * std::f64::consts::PI * EARTH_RADIUS) - std::f64::consts::PI * EARTH_RADIUS;
-        let mercator_y = std::f64::consts::PI * EARTH_RADIUS - (point.y / scale) * (2.0 * std::f64::consts::PI * EARTH_RADIUS);
+        // Convert from pixel coordinates to raw Mercator coordinates
+        let x = (pixel.x / scale) * (2.0 * std::f64::consts::PI * EARTH_RADIUS) - std::f64::consts::PI * EARTH_RADIUS;
+        let y = std::f64::consts::PI * EARTH_RADIUS - (pixel.y / scale) * (2.0 * std::f64::consts::PI * EARTH_RADIUS);
 
-        // Use the core Web Mercator inverse projection from geo.rs
-        LatLng::from_mercator(Point::new(mercator_x, mercator_y))
+        // Standard Web Mercator inverse projection
+        const EARTH_RADIUS: f64 = 6378137.0;
+        let lng = x / EARTH_RADIUS * 180.0 / std::f64::consts::PI;
+        let lat = (2.0 * (y / EARTH_RADIUS).exp().atan() - std::f64::consts::PI / 2.0) * 180.0 / std::f64::consts::PI;
+
+        LatLng::new(lat, lng)
     }
 
     /// Gets or calculates the pixel origin for this viewport
@@ -192,37 +196,33 @@ impl Viewport {
     }
 
     /// Converts a geographical coordinate to screen pixel coordinates (container relative)
-    /// This matches Leaflet's latLngToContainerPoint method
     pub fn lat_lng_to_pixel(&self, lat_lng: &LatLng) -> Point {
         let layer_point = self.lat_lng_to_layer_point(lat_lng);
         self.layer_point_to_container_point(&layer_point)
     }
 
     /// Converts screen pixel coordinates back to geographical coordinates
-    /// This matches Leaflet's containerPointToLatLng method
     pub fn pixel_to_lat_lng(&self, pixel: &Point) -> LatLng {
         let layer_point = self.container_point_to_layer_point(pixel);
         self.layer_point_to_lat_lng(&layer_point)
     }
 
     /// Converts LatLng to layer point (relative to pixel origin)
-    /// This matches Leaflet's latLngToLayerPoint method
     pub fn lat_lng_to_layer_point(&self, lat_lng: &LatLng) -> Point {
         let projected_point = self.project(lat_lng, None);
         projected_point.subtract(&self.get_pixel_origin())
     }
 
     /// Converts layer point back to LatLng
-    /// This matches Leaflet's layerPointToLatLng method
     pub fn layer_point_to_lat_lng(&self, point: &Point) -> LatLng {
         let projected_point = point.add(&self.get_pixel_origin());
         self.unproject(&projected_point, None)
     }
 
     /// Converts layer point to container point (screen coordinates)
-    /// This matches Leaflet's layerPointToContainerPoint method with transform support
+    /// This method supports CSS-style transforms during animation
     pub fn layer_point_to_container_point(&self, point: &Point) -> Point {
-        // Apply current transform (like Leaflet's CSS transforms during animation)
+        // Apply current transform (CSS transforms during animation)
         let mut result = Point::new(point.x + self.size.x / 2.0, point.y + self.size.y / 2.0);
 
         if !self.current_transform.is_identity() {
@@ -240,7 +240,7 @@ impl Viewport {
     }
 
     /// Converts container point to layer point
-    /// This matches Leaflet's containerPointToLayerPoint method with transform support
+    /// This method supports CSS-style transforms during animation
     pub fn container_point_to_layer_point(&self, point: &Point) -> Point {
         let mut result = *point;
 
@@ -259,12 +259,12 @@ impl Viewport {
     }
 
     /// Pans the viewport by the given pixel offset with bounds checking
-    /// This implements Leaflet's drag behavior with viscous bounds
+    /// This implements drag behavior with viscous bounds
     pub fn pan(&mut self, delta: Point) -> Point {
         let current_layer_point = self.lat_lng_to_layer_point(&self.center); // Actual current center in layer coordinates
         let mut new_layer_point = current_layer_point.subtract(&delta);
 
-        // Apply bounds limiting if max_bounds is set (like Leaflet's _onPreDragLimit)
+        // Apply bounds limiting if max_bounds is set
         if let Some(bounds) = &self.max_bounds {
             if self.max_bounds_viscosity > 0.0 {
                 new_layer_point = self.limit_offset_to_bounds(new_layer_point, bounds);
@@ -279,9 +279,9 @@ impl Viewport {
         actual_new_layer_point.subtract(&current_layer_point)
     }
 
-    /// Limits an offset to stay within bounds (like Leaflet's viscous bounds)
+    /// Limits an offset to stay within bounds (viscous bounds)
     fn limit_offset_to_bounds(&self, layer_point: Point, bounds: &LatLngBounds) -> Point {
-        // Calculate the offset limit like Leaflet's Map.Drag._onDragStart
+        // Calculate the offset limit
         let nw =
             self.lat_lng_to_layer_point(&LatLng::new(bounds.north_east.lat, bounds.south_west.lng));
         let se =
@@ -292,7 +292,7 @@ impl Viewport {
 
         let mut limited_point = layer_point;
 
-        // Apply viscous limiting like Leaflet's _viscousLimit
+        // Apply viscous limiting
         if layer_point.x < limit_min.x {
             limited_point.x = self.viscous_limit(layer_point.x, limit_min.x);
         }
@@ -309,13 +309,12 @@ impl Viewport {
         limited_point
     }
 
-    /// Applies viscous resistance to boundary violations (like Leaflet's _viscousLimit)
+    /// Applies viscous resistance to boundary violations
     fn viscous_limit(&self, value: f64, threshold: f64) -> f64 {
         value - (value - threshold) * self.max_bounds_viscosity
     }
 
     /// Zooms the viewport to a specific level at a given point
-    /// This matches Leaflet's setZoomAround method
     pub fn zoom_to(&mut self, zoom: f64, focus_point: Option<Point>) {
         let new_zoom = zoom.clamp(self.min_zoom, self.max_zoom);
         let old_zoom = self.zoom;
@@ -350,7 +349,7 @@ impl Viewport {
     }
 
     /// Smooth zoom animation method that handles intermediate zoom levels
-    /// This is like Leaflet's _animateZoom method
+    /// This method uses CSS-style transforms for smooth zoom animation
     pub fn animate_zoom_to(&mut self, target_zoom: f64, focus_point: Option<Point>, progress: f64) {
         if progress >= 1.0 {
             self.zoom_to(target_zoom, focus_point);
@@ -361,16 +360,24 @@ impl Viewport {
         let start_zoom = self.zoom;
         let zoom_diff = target_zoom - start_zoom;
 
-        // Use eased progress for smoother animation
-        let eased_progress = self.ease_out_cubic(progress);
+        // Use unified eased progress for smoother animation
+        let eased_progress = crate::layers::animation::ease_out_cubic(progress);
         let eased_zoom = start_zoom + (zoom_diff * eased_progress);
 
-        // Apply transform for smooth animation (like Leaflet's CSS transforms)
+        // Calculate scale and translation for accurate animation
         let scale_factor = 2_f64.powf(eased_zoom - start_zoom);
         let origin = focus_point.unwrap_or(Point::new(self.size.x / 2.0, self.size.y / 2.0));
+        
+        // Calculate translation to keep focus point stationary during zoom
+        let translation = if let Some(focus) = focus_point {
+            let center_offset = focus.subtract(&Point::new(self.size.x / 2.0, self.size.y / 2.0));
+            center_offset.multiply(1.0 - 1.0 / scale_factor)
+        } else {
+            Point::new(0.0, 0.0)
+        };
 
         self.current_transform = Transform::new(
-            Point::new(0.0, 0.0), // No translation during zoom
+            translation,
             scale_factor,
             origin,
         );
@@ -378,11 +385,18 @@ impl Viewport {
         // Don't update the actual zoom until animation is complete
         // This keeps tile loading stable during animation
     }
-
-    /// Ease out cubic function for smooth animations
-    fn ease_out_cubic(&self, t: f64) -> f64 {
-        let t = t - 1.0;
-        t * t * t + 1.0
+    
+    /// Apply transform-aware coordinate conversion
+    /// This ensures coordinates are properly transformed during animations
+    pub fn transform_aware_lat_lng_to_pixel(&self, lat_lng: &LatLng) -> Point {
+        let layer_point = self.lat_lng_to_layer_point(lat_lng);
+        self.layer_point_to_container_point(&layer_point)
+    }
+    
+    /// Apply transform-aware reverse coordinate conversion
+    pub fn transform_aware_pixel_to_lat_lng(&self, pixel: &Point) -> LatLng {
+        let layer_point = self.container_point_to_layer_point(pixel);
+        self.layer_point_to_lat_lng(&layer_point)
     }
 
     /// Gets the current viewport bounds in geographical coordinates

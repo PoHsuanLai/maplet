@@ -105,6 +105,7 @@ pub use rendering::{context::RenderContext, pipeline::RenderPipeline};
 pub use spatial::{clustering::Clustering, index::SpatialIndex};
 
 pub use layers::animation::{AnimationManager, EasingType};
+pub use traits::Lerp;
 
 pub use data::{formats::DataFormat, geojson::GeoJsonLayer};
 

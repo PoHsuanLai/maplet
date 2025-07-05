@@ -22,6 +22,33 @@ impl Default for ControlConfig {
     }
 }
 
+/// Unified configuration presets for ControlConfig
+impl ControlConfig {
+    pub fn minimal() -> Self {
+        Self {
+            visible: false,
+            position: Position::TopRight,
+            margin: 5.0,
+        }
+    }
+    
+    pub fn full_controls() -> Self {
+        Self {
+            visible: true,
+            position: Position::TopRight,
+            margin: 15.0,
+        }
+    }
+    
+    pub fn mobile_friendly() -> Self {
+        Self {
+            visible: true,
+            position: Position::BottomRight,
+            margin: 20.0,
+        }
+    }
+}
+
 /// Simple control manager that delegates to the unified components
 pub struct ControlManager {
     config: ControlConfig,
@@ -48,5 +75,19 @@ impl ControlManager {
 impl Default for ControlManager {
     fn default() -> Self {
         Self::with_default_config()
+    }
+}
+
+/// Implement unified configuration trait for ControlManager
+impl crate::traits::Configurable for ControlManager {
+    type Config = ControlConfig;
+    
+    fn config(&self) -> &Self::Config {
+        &self.config
+    }
+    
+    fn set_config(&mut self, config: Self::Config) -> crate::Result<()> {
+        self.config = config;
+        Ok(())
     }
 }

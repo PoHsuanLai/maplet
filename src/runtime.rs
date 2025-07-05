@@ -3,30 +3,8 @@
 //! This module provides runtime-agnostic interfaces for async operations,
 //! allowing the library to work with different async runtimes (Tokio, async-std, WASM, etc.)
 
-use std::future::Future;
-use std::pin::Pin;
+use crate::prelude::{Future, Pin};
 
-/// Trait for async background processing
-/// Standardizes the async patterns used across background tasks
-/// Unifies AsyncProcessor and BackgroundTask functionality
-pub trait AsyncProcessor: Send + Sync {
-    type Input: Send + 'static;
-    type Output: Send + 'static;
-    type Error: Send + 'static;
-    
-    /// Process data asynchronously
-    fn process(&self, input: Self::Input) -> Pin<Box<dyn Future<Output = std::result::Result<Self::Output, Self::Error>> + Send + '_>>;
-    
-    /// Get processing priority
-    fn priority(&self) -> crate::background::tasks::TaskPriority {
-        crate::background::tasks::TaskPriority::Normal
-    }
-    
-    /// Estimate processing duration
-    fn estimated_duration(&self, input: &Self::Input) -> std::time::Duration {
-        std::time::Duration::from_millis(100)
-    }
-}
 /// A trait for spawning async tasks (object-safe version)
 pub trait AsyncSpawner: Send + Sync + 'static {
     /// Spawn a future and return a handle to it
@@ -94,7 +72,7 @@ pub mod spawners {
         use super::*;
         use ::tokio::task::JoinHandle;
         use futures::future::FutureExt;
-        use std::sync::{Arc, Mutex};
+        use crate::prelude::{Arc, Mutex};
 
         /// Type alias for tokio handle with result
         type TokioHandleResult = Arc<Mutex<Option<JoinHandle<Box<dyn std::any::Any + Send>>>>>;
@@ -172,7 +150,7 @@ pub mod spawners {
     #[cfg(feature = "wasm")]
     pub mod wasm {
         use super::*;
-        use std::sync::{Arc, Mutex};
+        use crate::prelude::{Arc, Mutex};
 
         /// WASM-compatible async spawner
         pub struct WasmSpawner;
@@ -253,6 +231,125 @@ pub mod spawners {
                 if let Ok(mut finished) = self.finished.lock() {
                     *finished = true;
                 }
+            }
+        }
+    }
+}
+
+/// Unified async utilities to consolidate duplicate patterns
+pub mod async_utils {
+    use super::*;
+    
+    /// Unified semaphore implementation to replace multiple custom semaphores
+    #[derive(Debug, Clone)]
+    pub struct Semaphore {
+        permits: std::sync::Arc<std::sync::Mutex<usize>>,
+        max_permits: usize,
+    }
+    
+    impl Semaphore {
+        pub fn new(permits: usize) -> Self {
+            Self {
+                permits: std::sync::Arc::new(std::sync::Mutex::new(permits)),
+                max_permits: permits,
+            }
+        }
+        
+        pub fn try_acquire(&self) -> bool {
+            if let Ok(mut permits) = self.permits.lock() {
+                if *permits > 0 {
+                    *permits -= 1;
+                    return true;
+                }
+            }
+            false
+        }
+        
+        pub fn release(&self) {
+            if let Ok(mut permits) = self.permits.lock() {
+                if *permits < self.max_permits {
+                    *permits += 1;
+                }
+            }
+        }
+        
+        pub fn available_permits(&self) -> usize {
+            self.permits.lock().map(|permits| *permits).unwrap_or(0)
+        }
+    }
+    
+    /// Unified async delay function that works across runtimes
+    pub async fn async_delay(duration: std::time::Duration) {
+        #[cfg(feature = "tokio-runtime")]
+        {
+            tokio::time::sleep(duration).await;
+        }
+        
+        #[cfg(not(feature = "tokio-runtime"))]
+        {
+            // Use a simple async delay that doesn't block
+            let start = std::time::Instant::now();
+            while start.elapsed() < duration {
+                std::hint::spin_loop();
+            }
+        }
+    }
+    
+    /// Unified worker loop pattern to eliminate duplicate implementations
+    pub async fn unified_worker_loop<T, R>(
+        task_rx: crossbeam_channel::Receiver<T>,
+        result_tx: crossbeam_channel::Sender<R>,
+        semaphore: Semaphore,
+        max_queue_size: usize,
+        process_task: impl Fn(T) -> Pin<Box<dyn Future<Output = R> + Send>> + Send + Sync + 'static,
+    ) where
+        T: Send + Sync + 'static + Ord + Clone,
+        R: Send + Sync + 'static,
+    {
+        let mut task_queue = std::collections::BinaryHeap::new();
+        let process_task = std::sync::Arc::new(process_task);
+        
+        loop {
+            // Collect all available tasks
+            while let Ok(task) = task_rx.try_recv() {
+                task_queue.push(task);
+                
+                // Drop tasks if queue is too large
+                while task_queue.len() > max_queue_size {
+                    task_queue.pop();
+                }
+            }
+            
+            // Process the highest priority task if we have capacity
+            if let Some(task) = task_queue.pop() {
+                if semaphore.try_acquire() {
+                    let result_tx = result_tx.clone();
+                    let process_task = process_task.clone();
+                    let semaphore = semaphore.clone();
+                    
+                    spawn(async move {
+                        let result = process_task(task).await;
+                        let _ = result_tx.send(result);
+                        semaphore.release();
+                    });
+                } else {
+                    // No capacity, put task back
+                    task_queue.push(task);
+                }
+            }
+            
+            // Brief pause to prevent busy-waiting
+            let sleep_duration = if task_queue.is_empty() { 
+                std::time::Duration::from_millis(100) 
+            } else { 
+                std::time::Duration::from_millis(10) 
+            };
+            
+            async_delay(sleep_duration).await;
+            
+            // Check if we should exit (channel closed and no tasks)
+            if task_queue.is_empty() && task_rx.is_empty() && task_rx.try_recv().is_err() {
+                break;
             }
         }
     }

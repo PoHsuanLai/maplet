@@ -8,7 +8,7 @@ pub use crate::core::{
     builder::MapBuilder,
     config::{
         FrameTimingConfig, GpuRenderingConfig, InteractionAnimationConfig, MapPerformanceOptions,
-        MapPerformanceProfile, TextureFilterMode, TileLoadingConfig,
+        MapPerformanceProfile, TextureFilterMode, TileLoadingConfig, UnifiedMapConfig,
     },
     geo::{LatLng, LatLngBounds, Point, TileCoord},
     map::{Map as CoreMap, MapOptions, UpdateOrchestrator, UpdatePerformanceMetrics},
@@ -46,7 +46,7 @@ pub use crate::background::tasks::{
 };
 
 pub use crate::runtime::{
-    runtime, spawn, spawn_with_result, AsyncHandle, AsyncHandleWithResult, AsyncProcessor, AsyncSpawner,
+    runtime, spawn, spawn_with_result, AsyncHandle, AsyncHandleWithResult, AsyncSpawner,
 };
 
 pub use crate::layers::tile::{
@@ -72,17 +72,22 @@ pub use crate::{Error as MapError, Result};
 pub use std::{
     sync::Arc,
     time::{Duration, Instant},
+    collections::{BinaryHeap, VecDeque},
+    sync::Mutex,
+    cmp::Ordering,
+    future::Future,
+    pin::Pin,
 };
 
 pub use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
 
-#[cfg(feature = "tokio-runtime")]
-pub use futures::Future;
+// Future is now included in std imports above
 
 // Shared traits for common patterns
 pub use crate::traits::{
     BackgroundTask, Cacheable, CacheStats, CoordinateTransform, 
     LayerOperations, Renderable, SpatialOperations, ViewportAware, Configurable,
+    ConfigPreset, ConfigBuilder,
 };
 
 #[cfg(feature = "egui")]

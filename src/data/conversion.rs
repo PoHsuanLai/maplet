@@ -38,12 +38,15 @@ impl Converter {
     ) -> Result<Point, ConversionError> {
         match (from, to) {
             (CoordinateSystem::WGS84, CoordinateSystem::WebMercator) => {
+                // Use the unified Web Mercator projection from viewport
                 let lat_lng = LatLng::new(point.y, point.x);
-                let mercator = lat_lng.to_mercator();
-                Ok(mercator)
+                let mercator = crate::core::viewport::Viewport::default().project(&lat_lng, None);
+                Ok(Point::new(mercator.x, mercator.y))
             }
             (CoordinateSystem::WebMercator, CoordinateSystem::WGS84) => {
-                let lat_lng = LatLng::from_mercator(point);
+                // Use the unified Web Mercator unprojection from viewport
+                let mercator_point = crate::core::geo::Point::new(point.x, point.y);
+                let lat_lng = crate::core::viewport::Viewport::default().unproject(&mercator_point, None);
                 Ok(Point::new(lat_lng.lng, lat_lng.lat))
             }
             (CoordinateSystem::WGS84, CoordinateSystem::UTM { zone, northern }) => {
@@ -250,6 +253,7 @@ impl PixelMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::GeometryOps;
 
     #[test]
     fn test_coordinate_conversion() {
@@ -285,7 +289,7 @@ mod tests {
         let bounds = tile.bounds(); // Use TileCoord method directly
 
         // Should contain NYC approximately
-        assert!(bounds.contains(&nyc));
+        assert!(bounds.contains_point(&nyc));
     }
 
     #[test]

@@ -2,13 +2,13 @@
 
 use crate::{
     core::geo::{LatLng, Point, TileCoord},
+    traits::{RetryLogic, should_retry_with_backoff},
+    prelude::{HashMap, Arc},
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TileLayerOptions {
-    pub tile_size: u32,
+    pub tile_size: u32, 
     pub min_zoom: u8,
     pub max_zoom: u8,
     pub attribution: Option<String>,
@@ -33,7 +33,7 @@ impl Default for TileLayerOptions {
             attribution: None,
             opacity: 1.0,
             z_index: 1,
-            keep_buffer: 2,
+            keep_buffer: 8, // Increased from 2 for much more aggressive prefetching
             subdomains: vec!["a".to_string(), "b".to_string(), "c".to_string()],
             error_tile_url: None,
             cross_origin: false,
@@ -46,7 +46,7 @@ impl Default for TileLayerOptions {
 }
 
 /// Represents a collection of tiles at a specific zoom level
-/// Enhanced with CSS-style animation transform support
+/// Enhanced with CSS-style animation transform support (like Leaflet's level system)
 #[derive(Debug)]
 pub struct TileLevel {
     pub zoom: u8,
@@ -65,13 +65,23 @@ pub struct TileLevel {
     pub animation_duration: std::time::Duration,
     /// Target transform for ongoing animations
     pub target_transform: Option<(f64, Point)>, // (scale, translation)
+    
+    /// Leaflet-style level management
+    /// Z-index for layering during animations (like Leaflet's CSS z-index)
+    pub z_index: i32,
+    /// Whether this level should be retained during zoom transitions
+    pub retain: bool,
+    /// Opacity for fade transitions (0.0 to 1.0)
+    pub opacity: f32,
+    /// Whether this level is actively being used for rendering
+    pub active: bool,
 }
 
 impl TileLevel {
     pub fn new(zoom: u8) -> Self {
         Self {
             zoom,
-            tiles: HashMap::new(),
+            tiles: HashMap::default(),
             origin: Point::new(0.0, 0.0),
             scale: 1.0,
             translation: Point::new(0.0, 0.0),
@@ -80,6 +90,10 @@ impl TileLevel {
             animation_start: None,
             animation_duration: std::time::Duration::from_millis(350),
             target_transform: None,
+            z_index: 1,
+            retain: false,
+            opacity: 1.0,
+            active: false,
         }
     }
 
@@ -153,18 +167,18 @@ impl TileLevel {
                 return false;
             }
             
-            // Interpolate using easing function (ease-out cubic)
+            // Use unified easing function (ease-out cubic)
             let t = elapsed.as_secs_f64() / self.animation_duration.as_secs_f64();
-            let eased_t = 1.0 - (1.0 - t).powi(3); // ease-out cubic
+            let eased_t = crate::layers::animation::ease_out_cubic(t);
             
-            // Interpolate scale and translation
+            // Use unified interpolation functions
             let current_scale = self.scale;
             let current_translation = self.translation;
             
-            self.scale = current_scale + (target_scale - current_scale) * eased_t;
+            self.scale = crate::layers::animation::lerp(current_scale, target_scale, eased_t);
             self.translation = Point::new(
-                current_translation.x + (target_translation.x - current_translation.x) * eased_t,
-                current_translation.y + (target_translation.y - current_translation.y) * eased_t,
+                crate::layers::animation::lerp(current_translation.x, target_translation.x, eased_t),
+                crate::layers::animation::lerp(current_translation.y, target_translation.y, eased_t),
             );
             
             self.update_transform_matrix();
@@ -208,13 +222,10 @@ impl TileLevel {
         (final_min, final_max)
     }
 
-    /// Apply 2D transformation matrix to a point
+    /// Apply 2D transformation matrix to a point using unified operations
     fn apply_transform_matrix(&self, matrix: &[f64; 6], point: Point) -> Point {
-        // Matrix transformation: [x', y'] = [a c e; b d f] * [x; y; 1]
-        Point::new(
-            matrix[0] * point.x + matrix[2] * point.y + matrix[4], // a*x + c*y + e
-            matrix[1] * point.x + matrix[3] * point.y + matrix[5], // b*x + d*y + f
-        )
+        use crate::traits::MatrixTransform;
+        point.apply_transform(matrix)
     }
 
     /// Check if this level has any active animations
@@ -235,6 +246,48 @@ impl TileLevel {
         self.animation_start = None;
         self.target_transform = None;
         self.transform_matrix = None;
+    }
+    
+    /// Leaflet-style level management methods
+    
+    /// Set the z-index for this level (higher values render on top)
+    pub fn set_z_index(&mut self, z_index: i32) {
+        self.z_index = z_index;
+    }
+    
+    /// Mark this level as active (currently being rendered)
+    pub fn set_active(&mut self, active: bool) {
+        self.active = active;
+    }
+    
+    /// Set whether this level should be retained during zoom transitions
+    pub fn set_retain(&mut self, retain: bool) {
+        self.retain = retain;
+    }
+    
+    /// Set the opacity for fade transitions
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity.clamp(0.0, 1.0);
+    }
+    
+    /// Check if this level should be retained
+    pub fn should_retain(&self) -> bool {
+        self.retain
+    }
+    
+    /// Check if this level is active
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+    
+    /// Get the current opacity
+    pub fn get_opacity(&self) -> f32 {
+        self.opacity
+    }
+    
+    /// Get the z-index
+    pub fn get_z_index(&self) -> i32 {
+        self.z_index
     }
 }
 
@@ -305,31 +358,30 @@ impl TileState {
         self.last_retry_time = Some(std::time::Instant::now());
     }
 
-    pub fn should_retry(
-        &self,
-        max_retries: u32,
-        retry_delay_ms: u64,
-        exponential_backoff: bool,
-    ) -> bool {
-        if self.retry_count >= max_retries {
-            return false;
-        }
 
-        if let Some(last_retry) = self.last_retry_time {
-            let delay_multiplier = if exponential_backoff {
-                2_u64.pow(self.retry_count)
-            } else {
-                1
-            };
-            let required_delay = retry_delay_ms * delay_multiplier;
-            last_retry.elapsed().as_millis() >= required_delay as u128
-        } else {
-            true
-        }
-    }
 
     pub fn set_parent_data(&mut self, parent_data: Option<Arc<Vec<u8>>>) {
         self.show_parent = parent_data.is_some() && self.data.is_none();
         self.parent_data = parent_data;
+    }
+}
+
+impl RetryLogic for TileState {
+    fn should_retry(&self, max_retries: u32, retry_delay_ms: u64, exponential_backoff: bool) -> bool {
+        should_retry_with_backoff(
+            self.retry_count,
+            self.last_retry_time,
+            max_retries,
+            retry_delay_ms,
+            exponential_backoff,
+        )
+    }
+
+    fn get_retry_count(&self) -> u32 {
+        self.retry_count
+    }
+
+    fn get_last_retry_time(&self) -> Option<std::time::Instant> {
+        self.last_retry_time
     }
 }

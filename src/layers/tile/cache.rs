@@ -1,9 +1,8 @@
 use crate::core::geo::{LatLng, TileCoord};
 use crate::core::viewport::Viewport;
 use lru::LruCache;
-use std::collections::HashSet;
+use crate::prelude::{HashSet, Arc, Mutex};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
 
 /// Intelligent tile cache with multi-level prefetching strategy
 #[derive(Debug)]
@@ -62,39 +61,33 @@ impl TileCache {
     }
 
     /// Get tiles that should be prefetched for the current view
-    /// This implements your requirements:
-    /// - Current view tiles
-    /// - Tiles around current view
-    /// - Tiles at ±1 zoom level
-    /// - Directional prefetching based on movement
+    /// This implements a simple but effective approach:
+    /// - Current view tiles (highest priority)
+    /// - Tiles around current view with keepBuffer (medium priority)
+    /// - Tiles at ±1 zoom level (background priority)
     pub fn get_prefetch_tiles(&self, viewport: &Viewport) -> Vec<TileCoord> {
-        let mut prefetch_tiles = HashSet::new();
+        let mut prefetch_tiles = HashSet::default();
         let current_zoom = viewport.zoom.round() as u32;
 
         // 1. Get visible tiles for current zoom
         let visible_tiles = self.get_visible_tiles(viewport, current_zoom);
         prefetch_tiles.extend(visible_tiles.iter());
 
-        // 2. Get surrounding tiles (padding around visible area)
-        let padded_tiles = self.get_padded_tiles(viewport, current_zoom, 1); // 1 tile padding
-        prefetch_tiles.extend(padded_tiles.iter());
+        // 2. Get surrounding tiles with keepBuffer
+        let buffer_tiles = self.get_buffered_tiles(viewport, current_zoom, 2); // keepBuffer = 2 default
+        prefetch_tiles.extend(buffer_tiles.iter());
 
-        // 3. Get tiles at ±1 zoom levels
+        // 3. Get parent tiles at zoom-1 for smooth zoom out
         if current_zoom > 0 {
-            let lower_zoom_tiles = self.get_visible_tiles(viewport, current_zoom - 1);
-            prefetch_tiles.extend(lower_zoom_tiles.iter());
-        }
-        if current_zoom < 18 {
-            let higher_zoom_tiles = self.get_visible_tiles(viewport, current_zoom + 1);
-            prefetch_tiles.extend(higher_zoom_tiles.iter());
+            let parent_tiles = self.get_parent_tiles(viewport, current_zoom - 1);
+            prefetch_tiles.extend(parent_tiles.iter());
         }
 
-        // 4. Directional prefetching based on movement
-        if let Ok(direction) = self.movement_direction.lock() {
-            if let Some((dx, dy)) = *direction {
-                let directional_tiles = self.get_directional_tiles(viewport, current_zoom, dx, dy);
-                prefetch_tiles.extend(directional_tiles.iter());
-            }
+        // 4. Get some child tiles at zoom+1 for smooth zoom in
+        if current_zoom < 18 {
+            let child_tiles = self.get_child_tiles(viewport, current_zoom + 1);
+            // Limit child tiles to avoid loading too many
+            prefetch_tiles.extend(child_tiles.iter().take(16));
         }
 
         prefetch_tiles.into_iter().collect()
@@ -103,43 +96,59 @@ impl TileCache {
     /// Get tiles visible in the current viewport
     fn get_visible_tiles(&self, viewport: &Viewport, zoom: u32) -> Vec<TileCoord> {
         let bounds = viewport.bounds();
-        let scale = 2.0_f64.powi(zoom as i32);
+        
+        // Debug: Log viewport bounds
+        println!("🔍 [TILES] Viewport bounds: N={:.4}, S={:.4}, E={:.4}, W={:.4} (zoom={})", 
+                 bounds.north_east.lat, bounds.south_west.lat, bounds.north_east.lng, bounds.south_west.lng, zoom);
+        
+        // Use unified projection for consistency
+        let nw_proj = viewport.project(&LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
+        let se_proj = viewport.project(&LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
+        
+        let tile_size = 256.0;
+        let min_x = (nw_proj.x / tile_size).floor() as i32;
+        let max_x = (se_proj.x / tile_size).ceil() as i32;
+        let min_y = (nw_proj.y / tile_size).floor() as i32;
+        let max_y = (se_proj.y / tile_size).ceil() as i32;
 
-        // Convert lat/lng bounds to tile coordinates
-        let min_x = ((bounds.south_west.lng + 180.0) / 360.0 * scale).floor() as u32;
-        let max_x = ((bounds.north_east.lng + 180.0) / 360.0 * scale).ceil() as u32;
+        let max_tile = (256.0 * 2_f64.powf(zoom as f64) / tile_size) as i32;
         
-        let lat_rad_north = bounds.north_east.lat.to_radians();
-        let lat_rad_south = bounds.south_west.lat.to_radians();
-        
-        let min_y = ((1.0 - (lat_rad_north.tan() + (1.0 / lat_rad_north.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).floor() as u32;
-        let max_y = ((1.0 - (lat_rad_south.tan() + (1.0 / lat_rad_south.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).ceil() as u32;
+        // Debug: Log tile range
+        println!("🔍 [TILES] Tile range: x={}-{}, y={}-{} (max_tile={})", 
+                 min_x, max_x, min_y, max_y, max_tile);
 
         let mut tiles = Vec::new();
         for x in min_x..=max_x {
             for y in min_y..=max_y {
-                tiles.push(TileCoord { x, y, z: zoom as u8 });
+                if x >= 0 && y >= 0 && x < max_tile && y < max_tile {
+                    tiles.push(TileCoord { x: x as u32, y: y as u32, z: zoom as u8 });
+                }
             }
         }
+        
+        // Debug: Log first few tiles
+        if !tiles.is_empty() {
+            println!("🔍 [TILES] First 3 tiles: {:?}", tiles.iter().take(3).collect::<Vec<_>>());
+        }
+        
         tiles
     }
 
-    /// Get tiles with padding around the visible area
-    fn get_padded_tiles(&self, viewport: &Viewport, zoom: u32, padding: u32) -> Vec<TileCoord> {
+    /// Get tiles with buffer around the visible area
+    fn get_buffered_tiles(&self, viewport: &Viewport, zoom: u32, buffer: u32) -> Vec<TileCoord> {
         let bounds = viewport.bounds();
-        let scale = 2.0_f64.powi(zoom as i32);
-
-        // Calculate tile bounds with padding
-        let min_x = ((bounds.south_west.lng + 180.0) / 360.0 * scale).floor() as i32 - padding as i32;
-        let max_x = ((bounds.north_east.lng + 180.0) / 360.0 * scale).ceil() as i32 + padding as i32;
         
-        let lat_rad_north = bounds.north_east.lat.to_radians();
-        let lat_rad_south = bounds.south_west.lat.to_radians();
+        // Use unified projection for consistency
+        let nw_proj = viewport.project(&LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
+        let se_proj = viewport.project(&LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
         
-        let min_y = ((1.0 - (lat_rad_north.tan() + (1.0 / lat_rad_north.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).floor() as i32 - padding as i32;
-        let max_y = ((1.0 - (lat_rad_south.tan() + (1.0 / lat_rad_south.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).ceil() as i32 + padding as i32;
+        let tile_size = 256.0;
+        let min_x = (nw_proj.x / tile_size).floor() as i32 - buffer as i32;
+        let max_x = (se_proj.x / tile_size).ceil() as i32 + buffer as i32;
+        let min_y = (nw_proj.y / tile_size).floor() as i32 - buffer as i32;
+        let max_y = (se_proj.y / tile_size).ceil() as i32 + buffer as i32;
 
-        let max_tile = (2.0_f64.powi(zoom as i32)) as i32;
+        let max_tile = (256.0 * 2_f64.powf(zoom as f64) / tile_size) as i32;
 
         let mut tiles = Vec::new();
         for x in min_x..=max_x {
@@ -156,34 +165,60 @@ impl TileCache {
         tiles
     }
 
-    /// Get tiles in the predicted movement direction
-    fn get_directional_tiles(&self, viewport: &Viewport, zoom: u32, dx: f64, dy: f64) -> Vec<TileCoord> {
+    /// Get parent tiles at lower zoom for smooth zoom out
+    fn get_parent_tiles(&self, viewport: &Viewport, zoom: u32) -> Vec<TileCoord> {
+        if zoom == 0 {
+            return Vec::new();
+        }
+
         let bounds = viewport.bounds();
-        let scale = 2.0_f64.powi(zoom as i32);
-
-        // Calculate how far to look ahead based on movement direction
-        let look_ahead_distance = 2.0; // Look 2 tile widths ahead
-
-        // Calculate new bounds shifted in movement direction
-        let lng_shift = dx * look_ahead_distance * 360.0 / scale;
-        let lat_shift = dy * look_ahead_distance * 180.0 / scale;
-
-        let shifted_west = bounds.south_west.lng + lng_shift;
-        let shifted_east = bounds.north_east.lng + lng_shift;
-        let shifted_north = (bounds.north_east.lat + lat_shift).clamp(-85.0, 85.0);
-        let shifted_south = (bounds.south_west.lat + lat_shift).clamp(-85.0, 85.0);
-
-        // Get tiles for the shifted viewport
-        let min_x = ((shifted_west + 180.0) / 360.0 * scale).floor() as i32;
-        let max_x = ((shifted_east + 180.0) / 360.0 * scale).ceil() as i32;
         
-        let lat_rad_north = shifted_north.to_radians();
-        let lat_rad_south = shifted_south.to_radians();
+        // Use unified projection for consistency
+        let nw_proj = viewport.project(&LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
+        let se_proj = viewport.project(&LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
         
-        let min_y = ((1.0 - (lat_rad_north.tan() + (1.0 / lat_rad_north.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).floor() as i32;
-        let max_y = ((1.0 - (lat_rad_south.tan() + (1.0 / lat_rad_south.cos())).ln() / std::f64::consts::PI) / 2.0 * scale).ceil() as i32;
+        let tile_size = 256.0;
+        let min_x = (nw_proj.x / tile_size).floor() as i32;
+        let max_x = (se_proj.x / tile_size).ceil() as i32;
+        let min_y = (nw_proj.y / tile_size).floor() as i32;
+        let max_y = (se_proj.y / tile_size).ceil() as i32;
 
-        let max_tile = (2.0_f64.powi(zoom as i32)) as i32;
+        let max_tile = (256.0 * 2_f64.powf(zoom as f64) / tile_size) as i32;
+
+        let mut tiles = Vec::new();
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                if x >= 0 && y >= 0 && x < max_tile && y < max_tile {
+                    tiles.push(TileCoord { 
+                        x: x as u32, 
+                        y: y as u32, 
+                        z: zoom as u8 
+                    });
+                }
+            }
+        }
+        tiles
+    }
+
+    /// Get child tiles at higher zoom for smooth zoom in
+    fn get_child_tiles(&self, viewport: &Viewport, zoom: u32) -> Vec<TileCoord> {
+        if zoom > 18 {
+            return Vec::new();
+        }
+
+        let bounds = viewport.bounds();
+        
+        // Use unified projection for consistency
+        let nw_proj = viewport.project(&LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
+        let se_proj = viewport.project(&LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
+        
+        let tile_size = 256.0;
+        let min_x = (nw_proj.x / tile_size).floor() as i32;
+        let max_x = (se_proj.x / tile_size).ceil() as i32;
+        let min_y = (nw_proj.y / tile_size).floor() as i32;
+        let max_y = (se_proj.y / tile_size).ceil() as i32;
+
+        let max_tile = (256.0 * 2_f64.powf(zoom as f64) / tile_size) as i32;
 
         let mut tiles = Vec::new();
         for x in min_x..=max_x {
@@ -274,6 +309,36 @@ impl Clone for TileCache {
 impl Default for TileCache {
     fn default() -> Self {
         Self::with_default_capacity()
+    }
+}
+
+/// Implement unified Cacheable trait for TileCache
+impl crate::traits::Cacheable for TileCache {
+    type Key = crate::core::geo::TileCoord;
+    type Value = Arc<Vec<u8>>;
+    
+    fn get_cached(&self, key: &Self::Key) -> Option<Self::Value> {
+        self.get(key)
+    }
+    
+    fn cache(&mut self, key: Self::Key, value: Self::Value) {
+        self.put(key, value);
+    }
+    
+    fn invalidate(&mut self, key: &Self::Key) {
+        self.remove(key);
+    }
+    
+    fn clear_cache(&mut self) {
+        self.clear();
+    }
+    
+    fn cache_stats(&self) -> crate::traits::CacheStats {
+        crate::traits::CacheStats {
+            hits: 0, // TileCache doesn't track hits/misses currently
+            misses: 0,
+            size: self.len(),
+        }
     }
 }
 

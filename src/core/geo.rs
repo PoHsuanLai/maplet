@@ -1,3 +1,4 @@
+use crate::traits::{GeometryOps, PointMath};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
@@ -54,19 +55,7 @@ impl LatLng {
         lat.clamp(-MAX_LATITUDE, MAX_LATITUDE)
     }
 
-    /// Converts to Web Mercator projection (EPSG:3857)
-    pub fn to_mercator(&self) -> Point {
-        let x = self.lng.to_radians() * EARTH_RADIUS;
-        let y = ((PI / 4.0 + self.lat.to_radians() / 2.0).tan().ln()) * EARTH_RADIUS;
-        Point::new(x, y)
-    }
 
-    /// Creates LatLng from Web Mercator coordinates
-    pub fn from_mercator(point: Point) -> Self {
-        let lng = (point.x / EARTH_RADIUS).to_degrees();
-        let lat = (2.0 * (point.y / EARTH_RADIUS).exp().atan() - PI / 2.0).to_degrees();
-        Self::new(lat, lng)
-    }
 }
 
 impl Default for LatLng {
@@ -87,30 +76,7 @@ impl Point {
         Self { x, y }
     }
 
-    pub fn scale(&self, factor: f64) -> Self {
-        Self {
-            x: self.x * factor,
-            y: self.y * factor,
-        }
-    }
 
-    pub fn add(&self, other: &Point) -> Point {
-        Point::new(self.x + other.x, self.y + other.y)
-    }
-
-    pub fn subtract(&self, other: &Point) -> Point {
-        Point::new(self.x - other.x, self.y - other.y)
-    }
-
-    pub fn multiply(&self, scalar: f64) -> Point {
-        Point::new(self.x * scalar, self.y * scalar)
-    }
-
-    pub fn distance_to(&self, other: &Point) -> f64 {
-        let dx = self.x - other.x;
-        let dy = self.y - other.y;
-        (dx * dx + dy * dy).sqrt()
-    }
 
     pub fn floor(&self) -> Point {
         Point::new(self.x.floor(), self.y.floor())
@@ -123,11 +89,42 @@ impl Default for Point {
     }
 }
 
+/// Implement unified point math operations
+impl PointMath for Point {
+    fn add(&self, other: &Self) -> Self {
+        Point::new(self.x + other.x, self.y + other.y)
+    }
+    
+    fn subtract(&self, other: &Self) -> Self {
+        Point::new(self.x - other.x, self.y - other.y)
+    }
+    
+    fn multiply(&self, scalar: f64) -> Self {
+        Point::new(self.x * scalar, self.y * scalar)
+    }
+    
+    fn distance_to(&self, other: &Self) -> f64 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        (dx * dx + dy * dy).sqrt()
+    }
+    
+    fn scale(&self, factor: f64) -> Self {
+        Point::new(self.x * factor, self.y * factor)
+    }
+}
+
 /// Represents a bounding box of geographical coordinates
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatLngBounds {
     pub south_west: LatLng,
     pub north_east: LatLng,
+}
+
+impl Default for LatLngBounds {
+    fn default() -> Self {
+        Self::new(LatLng::default(), LatLng::default())
+    }
 }
 
 impl LatLngBounds {
@@ -153,7 +150,7 @@ impl LatLngBounds {
         let mut bounds = LatLngBounds::new(first, first);
 
         for point in points.iter().skip(1) {
-            bounds.extend(point);
+            bounds.extend_with_point(point);
         }
 
         Some(bounds)
@@ -170,43 +167,13 @@ impl LatLngBounds {
 
         for coord in coordinates.iter().skip(1) {
             let point = LatLng::new(coord[1], coord[0]);
-            bounds.extend(&point);
+            bounds.extend_with_point(&point);
         }
 
         Some(bounds)
     }
 
-    /// Checks if the bounds contain a point
-    pub fn contains(&self, point: &LatLng) -> bool {
-        point.lat >= self.south_west.lat
-            && point.lat <= self.north_east.lat
-            && point.lng >= self.south_west.lng
-            && point.lng <= self.north_east.lng
-    }
 
-    /// Checks if the bounds intersect with another bounds
-    pub fn intersects(&self, other: &LatLngBounds) -> bool {
-        !(other.north_east.lat < self.south_west.lat
-            || other.south_west.lat > self.north_east.lat
-            || other.north_east.lng < self.south_west.lng
-            || other.south_west.lng > self.north_east.lng)
-    }
-
-    /// Extends the bounds to include a point
-    pub fn extend(&mut self, point: &LatLng) {
-        self.south_west.lat = self.south_west.lat.min(point.lat);
-        self.south_west.lng = self.south_west.lng.min(point.lng);
-        self.north_east.lat = self.north_east.lat.max(point.lat);
-        self.north_east.lng = self.north_east.lng.max(point.lng);
-    }
-
-    /// Gets the center point of the bounds
-    pub fn center(&self) -> LatLng {
-        LatLng::new(
-            (self.south_west.lat + self.north_east.lat) / 2.0,
-            (self.south_west.lng + self.north_east.lng) / 2.0,
-        )
-    }
 
     /// Gets the span of the bounds
     pub fn span(&self) -> LatLng {
@@ -224,6 +191,49 @@ impl LatLngBounds {
         let east = self.north_east.lng.max(other.north_east.lng);
 
         LatLngBounds::new(LatLng::new(south, west), LatLng::new(north, east))
+    }
+}
+
+/// Implement unified geometry operations for LatLngBounds
+impl GeometryOps<LatLng> for LatLngBounds {
+    fn contains_point(&self, point: &LatLng) -> bool {
+        point.lat >= self.south_west.lat
+            && point.lat <= self.north_east.lat
+            && point.lng >= self.south_west.lng
+            && point.lng <= self.north_east.lng
+    }
+    
+    fn intersects_bounds(&self, other: &Self) -> bool {
+        !(other.north_east.lat < self.south_west.lat
+            || other.south_west.lat > self.north_east.lat
+            || other.north_east.lng < self.south_west.lng
+            || other.south_west.lng > self.north_east.lng)
+    }
+    
+    fn extend_with_point(&mut self, point: &LatLng) {
+        self.south_west.lat = self.south_west.lat.min(point.lat);
+        self.south_west.lng = self.south_west.lng.min(point.lng);
+        self.north_east.lat = self.north_east.lat.max(point.lat);
+        self.north_east.lng = self.north_east.lng.max(point.lng);
+    }
+    
+    fn center(&self) -> LatLng {
+        LatLng::new(
+            (self.south_west.lat + self.north_east.lat) / 2.0,
+            (self.south_west.lng + self.north_east.lng) / 2.0,
+        )
+    }
+    
+    fn is_valid(&self) -> bool {
+        self.south_west.lat <= self.north_east.lat && self.south_west.lng <= self.north_east.lng
+    }
+    
+    fn area(&self) -> f64 {
+        if !self.is_valid() {
+            0.0
+        } else {
+            (self.north_east.lat - self.south_west.lat) * (self.north_east.lng - self.south_west.lng)
+        }
     }
 }
 
@@ -339,7 +349,7 @@ mod tests {
         let point_inside = LatLng::new(40.5, -74.0);
         let point_outside = LatLng::new(42.0, -74.0);
 
-        assert!(bounds.contains(&point_inside));
-        assert!(!bounds.contains(&point_outside));
+        assert!(bounds.contains_point(&point_inside));
+        assert!(!bounds.contains_point(&point_outside));
     }
 }

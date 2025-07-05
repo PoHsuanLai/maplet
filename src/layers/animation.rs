@@ -1,33 +1,30 @@
 use crate::core::geo::{LatLng, Point};
 use crate::core::viewport::Transform;
-use std::time::{Duration, Instant};
+use crate::traits::{Lerp, PointMath};
+use crate::prelude::{Duration, Instant};
 
-/// Simple interpolation trait
-pub trait Lerp {
-    fn lerp(&self, other: &Self, t: f64) -> Self;
+/// Convenience functions for common animations
+pub fn ease_out_cubic(t: f64) -> f64 {
+    EasingType::EaseOut.apply(t)
 }
 
-impl Lerp for f64 {
-    fn lerp(&self, other: &Self, t: f64) -> Self {
-        self + (other - self) * t
-    }
+pub fn ease_in_cubic(t: f64) -> f64 {
+    EasingType::EaseIn.apply(t)
 }
 
-impl Lerp for Point {
-    fn lerp(&self, other: &Self, t: f64) -> Self {
-        Point::new(self.x.lerp(&other.x, t), self.y.lerp(&other.y, t))
-    }
+pub fn ease_in_out_cubic(t: f64) -> f64 {
+    EasingType::EaseInOut.apply(t)
 }
 
-impl Lerp for LatLng {
-    fn lerp(&self, other: &Self, t: f64) -> Self {
-        LatLng::new(self.lat.lerp(&other.lat, t), self.lng.lerp(&other.lng, t))
-    }
+pub fn lerp(start: f64, end: f64, t: f64) -> f64 {
+    start.lerp(&end, t)
 }
 
+/// Unified easing type that consolidates all the duplicate easing enums
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EasingType {
     Linear,
+    EaseIn,
     EaseOut,
     EaseInOut,
     Smooth,
@@ -37,19 +34,21 @@ pub enum EasingType {
 }
 
 impl EasingType {
+    /// Apply easing function to a normalized time value (0.0 to 1.0)
     pub fn apply(self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
         match self {
             EasingType::Linear => t,
+            EasingType::EaseIn => t * t * t,
             EasingType::EaseOut => {
                 let t = t - 1.0;
-                1.0 + t * t * t
+                t * t * t + 1.0
             }
             EasingType::EaseInOut => {
                 if t < 0.5 {
-                    2.0 * t * t
+                    4.0 * t * t * t
                 } else {
-                    let t = t - 1.0;
-                    1.0 + 2.0 * t * t * t
+                    1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
                 }
             }
             EasingType::Smooth => {
@@ -148,6 +147,53 @@ impl ZoomAnimation {
             focus_point,
         }
     }
+    
+    /// Create a smooth zoom animation with CSS-like transforms
+    pub fn new_smooth_style(
+        from_center: LatLng,
+        to_center: LatLng,
+        from_zoom: f64,
+        to_zoom: f64,
+        focus_point: Option<Point>,
+    ) -> Self {
+        let duration = Duration::from_millis(250); // Leaflet's default zoom duration
+        let easing = EasingType::EaseOut; // Smooth ease-out for zoom
+        
+        // Calculate scale factor for zoom animation
+        let scale_factor = 2_f64.powf(to_zoom - from_zoom);
+        
+        // Calculate transform origin (focus point or center)
+        let origin = focus_point.unwrap_or(Point::new(400.0, 300.0)); // Default viewport center
+        
+        // Calculate translation to keep focus point stationary during zoom
+        let translation = if let Some(focus) = focus_point {
+            // When zooming to a focus point, calculate translation to keep that point in place
+            // This mimics Leaflet's behavior where the point under the mouse stays fixed
+            let scale_delta = scale_factor - 1.0;
+            let center_to_focus = focus.subtract(&Point::new(400.0, 300.0));
+            center_to_focus.multiply(-scale_delta)
+        } else {
+            // No focus point, just zoom to center
+            Point::new(0.0, 0.0)
+        };
+
+        println!("🎬 [ANIMATION] Creating zoom animation: scale={:.2}, translation=({:.1}, {:.1})", 
+                 scale_factor, translation.x, translation.y);
+
+        Self {
+            start_time: Instant::now(),
+            duration,
+            easing,
+            from_transform: Transform::identity(),
+            to_transform: Transform::new(translation, scale_factor, origin),
+            from_center,
+            to_center,
+            from_zoom,
+            to_zoom,
+            active: true,
+            focus_point,
+        }
+    }
 
     pub fn update(&mut self) -> Option<ZoomAnimationState> {
         if !self.active {
@@ -170,11 +216,8 @@ impl ZoomAnimation {
         let current_transform = self.from_transform.lerp_with_easing(&self.to_transform, progress, self.easing);
 
         let eased_progress = self.easing.apply(progress);
-        let current_center = LatLng::new(
-            self.from_center.lat + (self.to_center.lat - self.from_center.lat) * eased_progress,
-            self.from_center.lng + (self.to_center.lng - self.from_center.lng) * eased_progress,
-        );
-        let current_zoom = self.from_zoom + (self.to_zoom - self.from_zoom) * eased_progress;
+        let current_center = self.from_center.lerp(&self.to_center, eased_progress);
+        let current_zoom = self.from_zoom.lerp(&self.to_zoom, eased_progress);
 
         Some(ZoomAnimationState {
             transform: current_transform,
@@ -347,16 +390,57 @@ impl AnimationManager {
         focus_point: Option<Point>,
         _options: Option<()>,
     ) -> bool {
+        // Don't animate if animations are disabled
         if !self.zoom_animation_enabled {
             return false;
         }
 
-        let zoom_diff = (to_zoom - from_zoom).abs();
-        if zoom_diff > self.zoom_animation_threshold {
+        // Don't animate if zoom difference is too small (no visible change)
+        if (to_zoom - from_zoom).abs() < 0.1 {
             return false;
         }
 
-        self.start_zed_zoom(from_center, to_center, from_zoom, to_zoom, focus_point);
+        // Only skip animation if the zoom difference is extreme (like Leaflet's threshold)
+        if (to_zoom - from_zoom).abs() > self.zoom_animation_threshold {
+            return false;
+        }
+
+        // Always animate zoom changes for better UX (more permissive than before)
+        self.start_smooth_zoom(from_center, to_center, from_zoom, to_zoom, focus_point);
+        true
+    }
+    
+    /// Start a smooth zoom animation with improved transform calculation
+    pub fn start_smooth_zoom(
+        &mut self,
+        from_center: LatLng,
+        to_center: LatLng,
+        from_zoom: f64,
+        to_zoom: f64,
+        focus_point: Option<Point>,
+    ) -> bool {
+        // Stop any existing animation
+        self.stop_zoom_animation();
+
+        // Create a new zoom animation with better easing and duration
+        let animation = ZoomAnimation::new_smooth_style(
+            from_center,
+            to_center,
+            from_zoom,
+            to_zoom,
+            focus_point,
+        );
+
+        println!("🎬 [ANIMATION] Starting smooth zoom: {:.1} -> {:.1}, focus: {:?}", 
+                 from_zoom, to_zoom, focus_point);
+
+        self.current_zoom_animation = Some(animation);
+        
+        // Keep rendering for a bit after animation completes to ensure smooth finish
+        self.keep_rendering_until = Some(
+            std::time::Instant::now() + std::time::Duration::from_millis(500)
+        );
+        
         true
     }
 }

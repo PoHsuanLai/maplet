@@ -1,8 +1,6 @@
 use crate::{
-    core::{geo::LatLng, viewport::Viewport},
+    core::geo::LatLng,
     layers::base::{LayerProperties, LayerTrait, LayerType},
-    rendering::context::RenderContext,
-    Result,
 };
 
 pub struct Marker {
@@ -48,19 +46,8 @@ impl LayerTrait for Marker {
         })
     }
 
-    fn set_options(&mut self, _options: serde_json::Value) -> Result<()> {
-        // TODO: Implement option setting
-        Ok(())
-    }
-
-    fn render(
-        &mut self,
-        _context: &mut RenderContext,
-        _viewport: &Viewport,
-    ) -> Result<()> {
-        // TODO: Implement marker rendering
-        Ok(())
-    }
+    crate::impl_todo_options_setting!();
+    crate::impl_todo_render!();
 
     fn bounds(&self) -> Option<crate::core::geo::LatLngBounds> {
         Some(crate::core::geo::LatLngBounds::new(

@@ -5,7 +5,7 @@ use crate::{
     Result,
 };
 use egui::{Color32, FontId, Rect, Response, Ui, Vec2};
-use std::time::{Duration, Instant};
+use crate::prelude::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PopupPosition {

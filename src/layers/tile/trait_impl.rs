@@ -24,6 +24,27 @@ impl LayerTrait for TileLayer {
 
         self.update_tiles(viewport)?;
 
+        // Check for zoom animation state and handle level transitions
+        if let Some(ref mut animation_manager) = self.animation_manager {
+            if let Some(animation_state) = animation_manager.update() {
+                // Create animated viewport with proper transform
+                let mut animated_viewport = viewport.clone();
+                animated_viewport.set_transform(animation_state.transform);
+                
+                // Apply animation state to viewport center and zoom for tile calculations
+                animated_viewport.center = animation_state.center;
+                animated_viewport.zoom = animation_state.zoom;
+                
+                return self.render_tiles(context, &animated_viewport);
+            }
+        }
+
+        // Also check if viewport has an active transform (set from map level)
+        if viewport.has_active_transform() {
+            // Use the viewport directly with its transform
+            return self.render_tiles(context, viewport);
+        }
+
         self.render_tiles(context, viewport)
     }
 

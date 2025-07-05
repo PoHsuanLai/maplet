@@ -43,9 +43,6 @@ pub struct RenderPipeline {
     // Shared resources
     camera_buffer: Buffer,
 
-    // Texture resources
-    texture_cache: FxHashMap<String, Texture>,
-
     pub enabled: bool,
 }
 
@@ -126,7 +123,6 @@ impl RenderPipeline {
             pipelines: FxHashMap::default(),
             bind_group_layouts: FxHashMap::default(),
             camera_buffer,
-            texture_cache: FxHashMap::default(),
             enabled: true,
         };
 
@@ -495,56 +491,20 @@ impl RenderPipeline {
             })
     }
 
-    /// Load a texture from bytes
-    pub fn load_texture(&mut self, name: String, data: &[u8]) -> Result<()> {
-        let img = image::load_from_memory(data)
-            .map_err(|e| format!("Failed to load image: {}", e))?
-            .to_rgba8();
-
-        let dimensions = img.dimensions();
-
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(&name),
-            size: wgpu::Extent3d {
-                width: dimensions.0,
-                height: dimensions.1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        self.queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &img,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * dimensions.0),
-                rows_per_image: Some(dimensions.1),
-            },
-            wgpu::Extent3d {
-                width: dimensions.0,
-                height: dimensions.1,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        self.texture_cache.insert(name, texture);
+    /// Load a texture from bytes - use unified Resources cache instead
+    /// TODO: Migrate to unified Resources cache when ownership issues are resolved
+    pub fn load_texture(&mut self, _name: String, _data: &[u8]) -> Result<()> {
+        // Temporarily removed - use Resources cache directly for texture loading
+        log::warn!("load_texture temporarily disabled - use Resources cache directly");
         Ok(())
     }
 
-    /// Get a cached texture
-    pub fn get_texture(&self, name: &str) -> Option<&Texture> {
-        self.texture_cache.get(name)
+    /// Get a cached texture - use unified Resources cache instead
+    /// TODO: Migrate to unified Resources cache when ownership issues are resolved
+    pub fn get_texture(&self, _name: &str) -> Option<&Texture> {
+        // Temporarily removed - use Resources cache directly for texture access
+        log::warn!("get_texture temporarily disabled - use Resources cache directly");
+        None
     }
 
     /// Finish and submit a frame

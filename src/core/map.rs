@@ -5,6 +5,7 @@ use crate::{
     layers::{base::LayerTrait, manager::LayerManager, animation::AnimationManager},
     plugins::base::PluginTrait,
     prelude::HashMap,
+    traits::PointMath,
     Result,
 };
 
@@ -455,6 +456,15 @@ impl Map {
 
         for action in actions {
             match &action {
+                Action::Zoom { level, focus_point, animate: true, .. } => {
+                    // Use the map's zoom_to method to trigger animations
+                    self.zoom_to(*level, *focus_point)?;
+                }
+                Action::Zoom { level, focus_point, animate: false, .. } => {
+                    // Direct zoom without animation
+                    MapOperations::zoom_to(&mut self.viewport, *level, *focus_point)?;
+                    self.update_orchestrator.mark_viewport_changed();
+                }
                 Action::PanInertia { .. } => {
                     self.input_handler.start_animation(
                         action,
@@ -487,8 +497,31 @@ impl Map {
         // Update animations and mark if active
         if let Some(animation_state) = self.animation_manager.update() {
             self.update_orchestrator.mark_animation_active(animation_state.progress < 1.0);
+            
+            // Apply the animation's transform to the viewport for visual effect
+            self.viewport.set_transform(animation_state.transform);
+            
+            // Update center and zoom during animation (smooth interpolation)
+            if animation_state.progress < 1.0 {
+                // During animation, use interpolated values but don't update actual viewport zoom/center until complete
+                // This creates the smooth visual effect while keeping tile loading stable
+            } else {
+                // Animation complete - apply final values and clear transform
+                self.viewport.center = animation_state.center;
+                self.viewport.zoom = animation_state.zoom;
+                self.viewport.clear_transform();
+                
+                // Emit zoom end event
+                self.event_manager.emit(MapEvent::ZoomEnd { 
+                    zoom: animation_state.zoom 
+                });
+            }
         } else {
             self.update_orchestrator.mark_animation_active(false);
+            // Ensure transform is cleared when no animation is active
+            if self.viewport.has_active_transform() {
+                self.viewport.clear_transform();
+            }
         }
 
         // Process input animations
@@ -502,7 +535,7 @@ impl Map {
         let (should_update, reasons) = self.update_orchestrator.should_update_and_render();
         
         // Be more permissive - always render if we have layers that need rendering
-        let force_render = self.layer_manager.len() > 0;
+        let force_render = !self.layer_manager.is_empty();
         
         if !should_update && !force_render {
             return Ok(false);
@@ -543,6 +576,13 @@ impl Map {
         // Render everything
         render_context.begin_frame()?;
         
+        // Set up viewport clipping bounds
+        let viewport_bounds = (
+            crate::core::geo::Point::new(0.0, 0.0),
+            crate::core::geo::Point::new(self.viewport.size.x, self.viewport.size.y),
+        );
+        render_context.set_clip_bounds(viewport_bounds.0, viewport_bounds.1);
+        
         self.layer_manager.for_each_layer_mut(|layer| {
             let _ = layer.render(render_context, &self.viewport);
         });
@@ -550,6 +590,9 @@ impl Map {
         for (_, plugin) in self.plugins.iter_mut() {
             let _ = plugin.render(render_context, &self.viewport);
         }
+        
+        // Clear clipping after rendering
+        render_context.clear_clip_bounds();
 
         // Log update reasons for debugging
         #[cfg(feature = "debug")]

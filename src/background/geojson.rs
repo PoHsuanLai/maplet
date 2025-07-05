@@ -6,9 +6,9 @@
 use crate::background::tasks::{BackgroundTask, TaskId, TaskPriority};
 use crate::core::geo::LatLngBounds;
 use crate::data::geojson::{GeoJson, GeoJsonFeature, GeoJsonLayer};
+use crate::traits::GeometryOps;
 use crate::Result;
-use std::future::Future;
-use std::pin::Pin;
+use crate::prelude::{Future, Pin};
 
 #[cfg(feature = "debug")]
 use log::{debug, error, info};
@@ -45,6 +45,7 @@ impl BackgroundTask for GeoJsonParseTask {
                 .unwrap_or_else(|| "inline".to_string());
 
             // Parse GeoJSON on a blocking thread pool to avoid blocking the async runtime
+            // Note: Use unified AsyncExecutor pattern from tasks.rs once error types are aligned
             #[cfg(feature = "tokio-runtime")]
             let result = tokio::task::spawn_blocking(move || {
                 #[cfg(feature = "debug")]
@@ -123,10 +124,8 @@ impl BackgroundTask for GeoJsonParseTask {
     }
 
     fn estimated_duration(&self) -> std::time::Duration {
-        // Estimate based on data length
-        let base_ms = 50; // Base parsing time
-        let data_factor = (self.data.len() / 1024).min(1000); // 1ms per KB, capped at 1s
-        std::time::Duration::from_millis(base_ms + data_factor as u64)
+        // Use unified duration estimation helper
+        crate::background::tasks::estimate_duration_from_data_size(self.data.len(), 50)
     }
 }
 
@@ -240,8 +239,8 @@ impl BackgroundTask for CalculateBoundsTask {
                             crate::data::geojson::GeoJsonLayer::geometry_bounds(geometry)
                         {
                             if let Some(ref mut b) = bounds {
-                                b.extend(&geom_bounds.south_west);
-                                b.extend(&geom_bounds.north_east);
+                                b.extend_with_point(&geom_bounds.south_west);
+                                b.extend_with_point(&geom_bounds.north_east);
                             } else {
                                 bounds = Some(geom_bounds);
                             }
@@ -348,10 +347,8 @@ impl BackgroundTask for FilterFeaturesTask {
     }
 
     fn estimated_duration(&self) -> std::time::Duration {
-        // Estimate based on number of features and filter complexity
-        let base_time = std::time::Duration::from_millis(5);
-        let feature_factor = (self.features.len() / 1000).max(1) as u32;
-        base_time * feature_factor.min(50) // Cap at 250ms
+        // Use unified duration estimation helper for feature filtering
+        crate::background::tasks::estimate_duration_from_item_count(self.features.len(), 5, 1)
     }
 }
 
