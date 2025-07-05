@@ -93,9 +93,9 @@ impl MapPerformanceProfile {
             },
             Self::HighQuality => MapPerformanceOptions {
                 framerate: FrameTimingConfig {
-                    target_fps: Some(60),
+                    target_fps: Some(120),
                     render_on_idle: true,
-                    min_update_interval_ms: 16,
+                    min_update_interval_ms: 8,
                 },
                 tile_loader: TileLoadingConfig {
                     cache_size: 4096,
@@ -165,23 +165,7 @@ impl FrameTimingConfig {
         self.target_fps.map(|fps| 1000 / fps as u64)
     }
 
-    pub fn should_render(&self, last_render_time: std::time::Instant) -> bool {
-        if self.render_on_idle {
-            return true;
-        }
-
-        let elapsed = last_render_time.elapsed();
-        if let Some(target_duration) = self.target_frame_duration_ms() {
-            elapsed.as_millis() >= target_duration as u128
-        } else {
-            true
-        }
-    }
-
-    pub fn should_update(&self, last_update_time: std::time::Instant) -> bool {
-        let elapsed = last_update_time.elapsed();
-        elapsed.as_millis() >= self.min_update_interval_ms as u128
-    }
+    // Removed should_render() and should_update() - timing is now controlled by UpdateOrchestrator
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -381,10 +365,8 @@ mod tests {
         };
 
         assert_eq!(config.target_frame_duration_ms(), Some(16));
-
-        // Should not render immediately after a render
-        let now = std::time::Instant::now();
-        assert!(!config.should_render(now));
+        
+        // Timing decisions are now handled by UpdateOrchestrator, not FrameTimingConfig
     }
 
     #[test]

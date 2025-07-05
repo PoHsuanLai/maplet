@@ -3,11 +3,10 @@
 //! This module provides background tasks for spatial clustering operations
 //! to keep CPU-intensive clustering computations off the main thread.
 
-use crate::background::tasks::{BackgroundTask, TaskPriority};
+use crate::background::tasks::{AsyncExecutor, BackgroundTask, TaskPriority};
 use crate::core::bounds::Bounds;
-use crate::prelude::HashMap;
 use crate::spatial::{
-    clustering::{Cluster, ClusteringConfig},
+    clustering::{Cluster, Clustering, ClusteringConfig},
     index::SpatialItem,
 };
 use crate::Result;
@@ -58,21 +57,18 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for ClusterMarkersTask<T> 
             let zoom_level = self.zoom_level;
             let config = self.config.clone();
 
-            #[cfg(feature = "tokio-runtime")]
-            let result = tokio::task::spawn_blocking(move || {
-                // Perform clustering computation
-                cluster_items(items, viewport_bounds, zoom_level, config)
-            })
-            .await
-            .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?;
-
-            #[cfg(not(feature = "tokio-runtime"))]
-            let result = {
-                // Perform clustering computation synchronously
-                cluster_items(items, viewport_bounds, zoom_level, config)
-            };
-
-            Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
+            AsyncExecutor::execute_blocking_boxed(move || {
+                // Use the core clustering implementation
+                let mut clustering = Clustering::new(config);
+                
+                // Add all items to the clustering system
+                for item in items {
+                    let _ = clustering.add_item(item); // Ignore errors for background processing
+                }
+                
+                // Get clusters for the viewport
+                Ok(clustering.get_clusters(&viewport_bounds, zoom_level))
+            }).await
         })
     }
 
@@ -85,14 +81,14 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for ClusterMarkersTask<T> 
     }
 
     fn estimated_duration(&self) -> std::time::Duration {
-        // Estimate based on number of items
-        let base_time = std::time::Duration::from_millis(20);
-        let item_factor = (self.items.len() / 500).max(1) as u32;
-        base_time * item_factor.min(25) // Cap at 500ms
+        // Estimate based on number of items (grid clustering is O(n))
+        let base_time = std::time::Duration::from_millis(5);
+        let item_factor = (self.items.len() / 1000).max(1) as u32;
+        base_time * item_factor.min(20) // Cap at 100ms
     }
 }
 
-/// Task for updating clusters when the viewport changes
+/// Task for updating existing clusters with new viewport parameters
 pub struct UpdateClustersTask<T: Clone + Send + Sync + 'static> {
     task_id: String,
     existing_clusters: Vec<Cluster<T>>,
@@ -116,7 +112,7 @@ impl<T: Clone + Send + Sync + 'static> UpdateClustersTask<T> {
             new_viewport_bounds,
             new_zoom_level,
             config,
-            priority: TaskPriority::High, // High priority for viewport updates
+            priority: TaskPriority::High, // Updates are usually time-sensitive
         }
     }
 
@@ -138,20 +134,20 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for UpdateClustersTask<T> 
             let new_zoom_level = self.new_zoom_level;
             let config = self.config.clone();
 
-            let result = tokio::task::spawn_blocking(move || {
-                // Extract all items from existing clusters
-                let mut all_items = Vec::new();
+            AsyncExecutor::execute_blocking_boxed(move || {
+                // Use the core clustering implementation
+                let mut clustering = Clustering::new(config);
+                
+                // Extract all items from existing clusters and add to clustering system
                 for cluster in existing_clusters {
-                    all_items.extend(cluster.items);
+                    for item in cluster.items {
+                        let _ = clustering.add_item(item); // Ignore errors for background processing
+                    }
                 }
-
+                
                 // Re-cluster with new parameters
-                cluster_items(all_items, new_viewport_bounds, new_zoom_level, config)
-            })
-            .await
-            .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?;
-
-            Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
+                Ok(clustering.get_clusters(&new_viewport_bounds, new_zoom_level))
+            }).await
         })
     }
 
@@ -171,79 +167,11 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for UpdateClustersTask<T> 
     }
 }
 
-/// Core clustering algorithm implementation
-fn cluster_items<T: Clone>(
-    items: Vec<SpatialItem<T>>,
-    viewport_bounds: Bounds,
-    zoom_level: f64,
-    config: ClusteringConfig,
-) -> Vec<Cluster<T>> {
-    // If zoom level is high enough, disable clustering
-    if zoom_level >= config.disable_clustering_at_zoom {
-        return items
-            .into_iter()
-            .enumerate()
-            .map(|(i, item)| Cluster::new(format!("single_{}", i), vec![item], zoom_level))
-            .collect();
-    }
-
-    // Filter items to viewport
-    let viewport_items: Vec<_> = items
-        .into_iter()
-        .filter(|item| viewport_bounds.intersects(&item.bounds))
-        .collect();
-
-    // Use grid-based clustering for performance
-    let mut grid: HashMap<(i32, i32), Vec<SpatialItem<T>>> = HashMap::default();
-    let grid_size = config.grid_size;
-
-    // Group items by grid cell
-    for item in viewport_items {
-        let center = item.bounds.center();
-        let grid_x = (center.x / grid_size).floor() as i32;
-        let grid_y = (center.y / grid_size).floor() as i32;
-
-        grid.entry((grid_x, grid_y)).or_default().push(item);
-    }
-
-    // Create clusters from grid cells
-    let mut clusters = Vec::new();
-    for ((grid_x, grid_y), cell_items) in grid {
-        if cell_items.len() == 1 {
-            // Single item - create individual cluster
-            clusters.push(Cluster::new(
-                format!("single_{}_{}", grid_x, grid_y),
-                cell_items,
-                zoom_level,
-            ));
-        } else if cell_items.len() <= config.max_cluster_size {
-            // Multiple items within limit - create cluster
-            clusters.push(Cluster::new(
-                format!("cluster_{}_{}", grid_x, grid_y),
-                cell_items,
-                zoom_level,
-            ));
-        } else {
-            // Too many items - split into multiple clusters
-            let chunks: Vec<_> = cell_items.chunks(config.max_cluster_size).collect();
-            for (i, chunk) in chunks.into_iter().enumerate() {
-                clusters.push(Cluster::new(
-                    format!("cluster_{}_{}_{}", grid_x, grid_y, i),
-                    chunk.to_vec(),
-                    zoom_level,
-                ));
-            }
-        }
-    }
-
-    clusters
-}
-
 /// Convenience functions for creating clustering background tasks
 pub mod tasks {
     use super::*;
 
-    /// Create a task to cluster markers
+    /// Create a clustering task from a set of items
     pub fn cluster_markers<T: Clone + Send + Sync + 'static>(
         task_id: String,
         items: Vec<SpatialItem<T>>,
@@ -254,7 +182,7 @@ pub mod tasks {
         ClusterMarkersTask::new(task_id, items, viewport_bounds, zoom_level, config)
     }
 
-    /// Create a task to update clusters
+    /// Create a task to update existing clusters
     pub fn update_clusters<T: Clone + Send + Sync + 'static>(
         task_id: String,
         existing_clusters: Vec<Cluster<T>>,

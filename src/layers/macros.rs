@@ -47,7 +47,7 @@ macro_rules! impl_layer_trait {
             self.$properties_field.opacity = opacity.clamp(0.0, 1.0);
         }
 
-        fn visible(&self) -> bool {
+        fn is_visible(&self) -> bool {
             self.$properties_field.visible
         }
 
@@ -73,7 +73,7 @@ macro_rules! impl_basic_options {
             self.$properties_field.options.clone()
         }
 
-        fn set_options(&mut self, options: serde_json::Value) -> crate::Result<()> {
+        fn set_options(&mut self, options: serde_json::Value) -> $crate::Result<()> {
             self.$properties_field.options = options;
             Ok(())
         }
@@ -85,7 +85,7 @@ macro_rules! impl_basic_options {
 macro_rules! impl_layer_constructor {
     ($layer_type:ty, $layer_enum:expr) => {
         pub fn new(id: String, name: String) -> Self {
-            let properties = crate::layers::base::LayerProperties::new(id, name, $layer_enum);
+            let properties = $crate::layers::base::LayerProperties::new(id, name, $layer_enum);
             Self { properties }
         }
     };

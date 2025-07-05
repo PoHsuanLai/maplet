@@ -1,4 +1,4 @@
-use crate::background::tasks::{BackgroundTask, TaskPriority};
+use crate::background::tasks::{AsyncExecutor, BackgroundTask, TaskPriority};
 use crate::core::{bounds::Bounds, geo::Point};
 use crate::spatial::index::{SpatialIndex, SpatialItem};
 use crate::Result;
@@ -34,31 +34,13 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BuildSpatialIndexTask<
         Box::pin(async move {
             let items = self.items.clone();
 
-            #[cfg(feature = "tokio-runtime")]
-            let result = tokio::task::spawn_blocking(move || -> crate::Result<SpatialIndex<T>> {
+            AsyncExecutor::execute_blocking_boxed(move || {
                 let mut index = SpatialIndex::new();
-
-                for item in items {
-                    index.insert(item)?
-                }
-
-                Ok(index)
-            })
-            .await
-            .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))??;
-
-            #[cfg(not(feature = "tokio-runtime"))]
-            let result = {
-                let mut index = SpatialIndex::new();
-
                 for item in items {
                     index.insert(item)?;
                 }
-
                 Ok(index)
-            }?;
-
-            Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
+            }).await
         })
     }
 
@@ -112,25 +94,12 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for SpatialQueryTask<T> {
             let index = self.index.clone();
             let query_bounds = self.query_bounds.clone();
 
-            #[cfg(feature = "tokio-runtime")]
-            let result = tokio::task::spawn_blocking(move || {
+            AsyncExecutor::execute_blocking_boxed(move || {
                 let items = index.query(&query_bounds);
                 // Clone the items to own them
                 let owned_items: Vec<SpatialItem<T>> = items.into_iter().cloned().collect();
-                owned_items
-            })
-            .await
-            .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?;
-
-            #[cfg(not(feature = "tokio-runtime"))]
-            let result = {
-                let items = index.query(&query_bounds);
-                // Clone the items to own them
-                let owned_items: Vec<SpatialItem<T>> = items.into_iter().cloned().collect();
-                owned_items
-            };
-
-            Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
+                Ok(owned_items)
+            }).await
         })
     }
 
@@ -185,25 +154,12 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for RadiusQueryTask<T> {
             let center = self.center;
             let radius = self.radius;
 
-            #[cfg(feature = "tokio-runtime")]
-            let result = tokio::task::spawn_blocking(move || {
+            AsyncExecutor::execute_blocking_boxed(move || {
                 let items = index.query_radius(&center, radius);
                 // Clone the items to own them
                 let owned_items: Vec<SpatialItem<T>> = items.into_iter().cloned().collect();
-                owned_items
-            })
-            .await
-            .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?;
-
-            #[cfg(not(feature = "tokio-runtime"))]
-            let result = {
-                let items = index.query_radius(&center, radius);
-                // Clone the items to own them
-                let owned_items: Vec<SpatialItem<T>> = items.into_iter().cloned().collect();
-                owned_items
-            };
-
-            Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
+                Ok(owned_items)
+            }).await
         })
     }
 
@@ -216,9 +172,20 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for RadiusQueryTask<T> {
     }
 
     fn estimated_duration(&self) -> std::time::Duration {
-        // Radius queries can be slightly slower than bound queries
-        std::time::Duration::from_millis(10)
+        // Radius queries are typically fast
+        std::time::Duration::from_millis(5)
     }
+}
+
+/// Represents different types of index updates
+#[derive(Debug, Clone)]
+pub enum IndexUpdate<T> {
+    /// Insert a new item
+    Insert(SpatialItem<T>),
+    /// Remove an item by ID
+    Remove(String),
+    /// Update an existing item
+    Update(String, SpatialItem<T>),
 }
 
 /// Task for batch updating a spatial index
@@ -229,16 +196,12 @@ pub struct BatchUpdateIndexTask<T: Clone + Send + Sync + 'static> {
     priority: TaskPriority,
 }
 
-/// Represents an update operation on the spatial index
-#[derive(Debug, Clone)]
-pub enum IndexUpdate<T> {
-    Insert(SpatialItem<T>),
-    Remove(String),                 // Remove by ID
-    Update(String, SpatialItem<T>), // Update by ID
-}
-
 impl<T: Clone + Send + Sync + 'static> BatchUpdateIndexTask<T> {
-    pub fn new(task_id: String, index: SpatialIndex<T>, updates: Vec<IndexUpdate<T>>) -> Self {
+    pub fn new(
+        task_id: String,
+        index: SpatialIndex<T>,
+        updates: Vec<IndexUpdate<T>>,
+    ) -> Self {
         Self {
             task_id,
             index,
@@ -263,8 +226,7 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BatchUpdateIndexTask<T
             let mut index = self.index.clone();
             let updates = self.updates.clone();
 
-            #[cfg(feature = "tokio-runtime")]
-            let result = tokio::task::spawn_blocking(move || -> crate::Result<SpatialIndex<T>> {
+            AsyncExecutor::execute_blocking_boxed(move || {
                 for update in updates {
                     match update {
                         IndexUpdate::Insert(item) => {
@@ -279,11 +241,7 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BatchUpdateIndexTask<T
                     }
                 }
                 Ok(index)
-            })
-            .await
-            .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))??;
-
-            Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
+            }).await
         })
     }
 

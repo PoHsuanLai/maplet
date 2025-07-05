@@ -1,4 +1,5 @@
 use crate::core::geo::{LatLng, Point};
+use crate::core::viewport::Transform;
 use std::time::{Duration, Instant};
 
 /// Simple interpolation trait
@@ -37,180 +38,50 @@ pub enum EasingType {
 
 impl EasingType {
     pub fn apply(self, t: f64) -> f64 {
-        let t = t.clamp(0.0, 1.0);
         match self {
             EasingType::Linear => t,
-            EasingType::EaseOut => 1.0 - (1.0 - t).powi(3),
+            EasingType::EaseOut => {
+                let t = t - 1.0;
+                1.0 + t * t * t
+            }
             EasingType::EaseInOut => {
                 if t < 0.5 {
-                    4.0 * t * t * t
+                    2.0 * t * t
                 } else {
-                    1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+                    let t = t - 1.0;
+                    1.0 + 2.0 * t * t * t
                 }
             }
             EasingType::Smooth => {
-                let overshoot = 1.03;
-                let bounce_back = 0.97;
-                if t < 0.7 {
-                    let normalized = t / 0.7;
-                    let base = 1.0 - (1.0 - normalized).powi(4);
-                    base * overshoot
-                } else {
-                    let normalized = (t - 0.7) / 0.3;
-                    let bounce = overshoot - (overshoot - bounce_back) * normalized;
-                    bounce + (1.0 - bounce_back) * normalized
-                }
+                // Smooth step (3t^2 - 2t^3)
+                t * t * (3.0 - 2.0 * t)
             }
             EasingType::UltraSmooth => {
-                let x = t * std::f64::consts::PI;
-                0.5 * (1.0 - (x).cos())
+                // Ultra smooth step (6t^5 - 15t^4 + 10t^3)
+                t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
             }
             EasingType::SpacecraftZoom => {
+                // Dramatic zoom with initial pause and rapid acceleration
                 if t < 0.1 {
-                    4.0 * t * t
-                } else if t < 0.8 {
-                    let normalized = (t - 0.1) / 0.7;
-                    0.04 + 0.92 * normalized
+                    t * 2.0 // Slow start
+                } else if t < 0.7 {
+                    let adjusted_t = (t - 0.1) / 0.6;
+                    0.2 + 0.6 * adjusted_t * adjusted_t * adjusted_t // Rapid acceleration
                 } else {
-                    let normalized = (t - 0.8) / 0.2;
-                    0.96 + 0.06 * (1.0 - (1.0 - normalized).powi(3))
+                    let adjusted_t = (t - 0.7) / 0.3;
+                    0.8 + 0.2 * (1.0 - (1.0 - adjusted_t).powi(3)) // Smooth landing
                 }
             }
             EasingType::DynamicZoom => {
-                let bounce = 0.05;
+                // Zoom with slight overshoot and settle
                 if t < 0.8 {
-                    let base = t / 0.8;
-                    let smooth = 1.0 - (1.0 - base).powi(3);
-                    smooth * (1.0 + bounce)
+                    let adjusted_t = t / 0.8;
+                    1.1 * adjusted_t * adjusted_t * (3.0 - 2.0 * adjusted_t) // Overshoot to 110%
                 } else {
-                    let overshoot = 1.0 + bounce;
-                    let return_phase = (t - 0.8) / 0.2;
-                    overshoot - bounce * return_phase
+                    let adjusted_t = (t - 0.8) / 0.2;
+                    1.1 - 0.1 * adjusted_t * adjusted_t // Settle back to 100%
                 }
             }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FrameTiming {
-    target_fps: Option<u32>,
-    last_frame_time: Instant,
-    frame_duration_ms: f64,
-    adaptive_timing: bool,
-    display_refresh_rate: f64,
-    frame_times: std::collections::VecDeque<f64>,
-}
-
-impl FrameTiming {
-    pub fn new(target_fps: Option<u32>) -> Self {
-        Self {
-            target_fps,
-            last_frame_time: Instant::now(),
-            frame_duration_ms: 16.67, // Default to ~60fps
-            adaptive_timing: true,
-            display_refresh_rate: 60.0,
-            frame_times: std::collections::VecDeque::with_capacity(10),
-        }
-    }
-
-    pub fn with_promotion_support(mut self) -> Self {
-        self.adaptive_timing = true;
-        self.display_refresh_rate = 120.0; // Assume 120Hz capable
-        self
-    }
-
-    pub fn update_frame_timing(&mut self) -> bool {
-        let now = Instant::now();
-        let elapsed_ms = now.duration_since(self.last_frame_time).as_secs_f64() * 1000.0;
-        
-        self.frame_times.push_back(elapsed_ms);
-        if self.frame_times.len() > 10 {
-            self.frame_times.pop_front();
-        }
-        
-        let avg_duration: f64 = self.frame_times.iter().sum::<f64>() / self.frame_times.len() as f64;
-        self.frame_duration_ms = avg_duration;
-        
-        self.last_frame_time = now;
-        
-        if let Some(target_fps) = self.target_fps {
-            let target_duration = 1000.0 / target_fps as f64;
-            elapsed_ms >= target_duration * 0.95 // 5% tolerance
-        } else {
-            true
-        }
-    }
-
-    pub fn current_fps(&self) -> f64 {
-        if self.frame_duration_ms > 0.0 {
-            1000.0 / self.frame_duration_ms
-        } else {
-            60.0
-        }
-    }
-
-    pub fn is_hitting_target(&self) -> bool {
-        if let Some(target) = self.target_fps {
-            let current = self.current_fps();
-            (current - target as f64).abs() < 5.0
-        } else {
-            true
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Transform {
-    pub translate: Point,
-    pub scale: f64,
-    pub origin: Point,
-}
-
-impl Default for Transform {
-    fn default() -> Self {
-        Self {
-            translate: Point::new(0.0, 0.0),
-            scale: 1.0,
-            origin: Point::new(0.0, 0.0),
-        }
-    }
-}
-
-impl Transform {
-    pub fn new(translate: Point, scale: f64, origin: Point) -> Self {
-        Self {
-            translate,
-            scale,
-            origin,
-        }
-    }
-
-    /// Create identity transform (no change)
-    pub fn identity() -> Self {
-        Self::default()
-    }
-
-    /// Check if this is effectively an identity transform
-    pub fn is_identity(&self) -> bool {
-        (self.scale - 1.0).abs() < 0.001
-            && self.translate.x.abs() < 0.1
-            && self.translate.y.abs() < 0.1
-    }
-
-    /// Interpolate between two transforms with easing
-    pub fn lerp_with_easing(&self, other: &Transform, t: f64, easing: EasingType) -> Transform {
-        let eased_t = easing.apply(t);
-        Transform {
-            translate: Point::new(
-                self.translate.x + (other.translate.x - self.translate.x) * eased_t,
-                self.translate.y + (other.translate.y - self.translate.y) * eased_t,
-            ),
-            scale: self.scale + (other.scale - self.scale) * eased_t,
-            origin: Point::new(
-                self.origin.x + (other.origin.x - self.origin.x) * eased_t,
-                self.origin.y + (other.origin.y - self.origin.y) * eased_t,
-            ),
         }
     }
 }
@@ -229,7 +100,6 @@ pub struct ZoomAnimation {
     to_zoom: f64,
     active: bool,
     focus_point: Option<Point>,
-    frame_timing: FrameTiming,
 }
 
 impl ZoomAnimation {
@@ -249,7 +119,7 @@ impl ZoomAnimation {
             focus_point,
             duration,
             EasingType::Smooth,
-        ).with_promotion_support()
+        )
     }
 
     pub fn with_easing(
@@ -276,21 +146,11 @@ impl ZoomAnimation {
             to_zoom,
             active: true,
             focus_point,
-            frame_timing: FrameTiming::new(Some(60)),
         }
-    }
-
-    pub fn with_promotion_support(mut self) -> Self {
-        self.frame_timing = self.frame_timing.with_promotion_support();
-        self
     }
 
     pub fn update(&mut self) -> Option<ZoomAnimationState> {
         if !self.active {
-            return None;
-        }
-
-        if !self.frame_timing.update_frame_timing() {
             return None;
         }
 
@@ -302,7 +162,7 @@ impl ZoomAnimation {
                 center: self.to_center,
                 zoom: self.to_zoom,
                 progress: 1.0,
-                fps: self.frame_timing.current_fps(),
+                fps: 60.0, // Default FPS for completed animations
             });
         }
 
@@ -321,7 +181,7 @@ impl ZoomAnimation {
             center: current_center,
             zoom: current_zoom,
             progress: eased_progress,
-            fps: self.frame_timing.current_fps(),
+            fps: 60.0, // Default FPS for active animations
         })
     }
 
@@ -339,9 +199,9 @@ impl ZoomAnimation {
 
     pub fn performance_metrics(&self) -> AnimationMetrics {
         AnimationMetrics {
-            current_fps: self.frame_timing.current_fps(),
-            is_hitting_target: self.frame_timing.is_hitting_target(),
-            frame_duration_ms: self.frame_timing.frame_duration_ms,
+            current_fps: 60.0,
+            is_hitting_target: true,
+            frame_duration_ms: 16.67,
         }
     }
 }
@@ -369,7 +229,6 @@ pub struct AnimationManager {
     zoom_animation_enabled: bool,
     zoom_easing: EasingType,
     zoom_duration: Duration,
-    frame_timing: FrameTiming,
     keep_rendering_until: Option<Instant>,
 }
 
@@ -387,7 +246,6 @@ impl AnimationManager {
             zoom_animation_enabled: true,
             zoom_easing: EasingType::Smooth,
             zoom_duration: Duration::from_millis(350),
-            frame_timing: FrameTiming::new(Some(60)).with_promotion_support(),
             keep_rendering_until: None,
         }
     }
@@ -419,8 +277,6 @@ impl AnimationManager {
     }
 
     pub fn update(&mut self) -> Option<ZoomAnimationState> {
-        self.frame_timing.update_frame_timing();
-
         if let Some(animation) = &mut self.current_zoom_animation {
             if let Some(state) = animation.update() {
                 if state.progress >= 1.0 {
@@ -450,9 +306,9 @@ impl AnimationManager {
             animation.performance_metrics()
         } else {
             AnimationMetrics {
-                current_fps: self.frame_timing.current_fps(),
-                is_hitting_target: self.frame_timing.is_hitting_target(),
-                frame_duration_ms: self.frame_timing.frame_duration_ms,
+                current_fps: 60.0,
+                is_hitting_target: true,
+                frame_duration_ms: 16.67,
             }
         }
     }

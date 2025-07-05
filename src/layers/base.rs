@@ -1,63 +1,9 @@
-use crate::{core::viewport::Viewport, input::events::InputEvent, Result};
+use crate::{core::viewport::Viewport, Result};
 
 use crate::rendering::context::RenderContext;
 
-pub trait LayerTrait: Send + Sync {
-    fn id(&self) -> &str;
-    fn name(&self) -> &str;
-
-    fn layer_type(&self) -> LayerType;
-
-    fn z_index(&self) -> i32;
-
-    fn set_z_index(&mut self, z_index: i32);
-
-    fn opacity(&self) -> f32;
-
-    fn set_opacity(&mut self, opacity: f32);
-
-    fn visible(&self) -> bool;
-
-    fn set_visible(&mut self, visible: bool);
-
-    fn on_add(&self, _map: &mut crate::core::map::Map) -> Result<()> {
-        Ok(())
-    }
-
-    fn on_remove(&self, _map: &mut crate::core::map::Map) -> Result<()> {
-        Ok(())
-    }
-
-    fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()>;
-
-    fn handle_input(&mut self, _input: &InputEvent) -> Result<()> {
-        Ok(())
-    }
-
-    fn update(&mut self, _delta_time: f64) -> Result<()> {
-        Ok(())
-    }
-
-    fn bounds(&self) -> Option<crate::core::geo::LatLngBounds> {
-        None
-    }
-
-    fn intersects_bounds(&self, bounds: &crate::core::geo::LatLngBounds) -> bool {
-        if let Some(layer_bounds) = self.bounds() {
-            layer_bounds.intersects(bounds)
-        } else {
-            true
-        }
-    }
-
-    fn options(&self) -> serde_json::Value;
-
-    fn set_options(&mut self, options: serde_json::Value) -> Result<()>;
-
-    fn as_any(&self) -> &dyn std::any::Any;
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-}
+// LayerTrait is now unified with LayerOperations in shared traits
+pub use crate::traits::LayerOperations as LayerTrait;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LayerType {
@@ -158,7 +104,7 @@ impl LayerTrait for BaseLayer {
         self.properties.opacity = opacity.clamp(0.0, 1.0);
     }
 
-    fn visible(&self) -> bool {
+    fn is_visible(&self) -> bool {
         self.properties.visible
     }
 
@@ -230,7 +176,7 @@ mod tests {
         assert_eq!(layer.opacity(), 0.5);
 
         layer.set_visible(false);
-        assert!(!layer.visible());
+        assert!(!layer.is_visible());
     }
 
     #[test]

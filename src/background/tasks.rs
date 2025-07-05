@@ -28,26 +28,8 @@ pub struct TaskResult {
     pub result: Result<Box<dyn std::any::Any + Send>>,
 }
 
-/// Trait for background tasks that can be executed asynchronously
-pub trait BackgroundTask: Send + Sync {
-    /// Execute the task and return the result
-    fn execute(
-        &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Box<dyn std::any::Any + Send>>> + Send + '_>,
-    >;
-
-    /// Get the task ID
-    fn task_id(&self) -> &str;
-
-    /// Get the task priority
-    fn priority(&self) -> TaskPriority;
-
-    /// Get an estimate of task duration (for scheduling)
-    fn estimated_duration(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(100) // Default 100ms
-    }
-}
+// BackgroundTask trait moved to shared traits.rs to avoid duplication
+pub use crate::traits::BackgroundTask;
 
 /// Internal wrapper for prioritized tasks
 #[derive(Clone)]
@@ -198,8 +180,7 @@ impl BackgroundTaskManager {
     /// Create a new task manager for testing
     pub fn for_testing() -> Self {
         println!("🧪 [DEBUG] BackgroundTaskManager::for_testing() - Creating test task manager");
-        let mut config = TaskManagerConfig::default();
-        config.test_mode = true;
+        let config = TaskManagerConfig{ test_mode: true, ..Default::default() };
         Self::new(config)
     }
 
@@ -343,3 +324,44 @@ impl BackgroundTaskManager {
     }
 }
 
+// AsyncSpawner trait moved to runtime.rs to avoid duplication
+pub use crate::runtime::AsyncSpawner;
+
+/// Common async execution helper to standardize tokio-runtime patterns
+pub struct AsyncExecutor;
+
+impl AsyncExecutor {
+    /// Execute a CPU-intensive task using the appropriate runtime
+    /// This consolidates the #[cfg(feature = "tokio-runtime")] patterns
+    pub async fn execute_blocking<F, R>(task: F) -> Result<R>
+    where
+        F: FnOnce() -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        #[cfg(feature = "tokio-runtime")]
+        {
+            tokio::task::spawn_blocking(task)
+                .await
+                .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?
+        }
+        
+        #[cfg(not(feature = "tokio-runtime"))]
+        {
+            task()
+        }
+    }
+    
+    /// Execute a CPU-intensive task that returns a boxed result
+    /// This is the common pattern used by background tasks
+    pub async fn execute_blocking_boxed<F, R>(task: F) -> Result<Box<dyn std::any::Any + Send>>
+    where
+        F: FnOnce() -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let result = Self::execute_blocking(task).await?;
+        Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
+    }
+}
+
+// AsyncHandle and AsyncHandleWithResult traits moved to runtime.rs to avoid duplication
+pub use crate::runtime::{AsyncHandle, AsyncHandleWithResult};

@@ -11,7 +11,7 @@ pub use crate::core::{
         MapPerformanceProfile, TextureFilterMode, TileLoadingConfig,
     },
     geo::{LatLng, LatLngBounds, Point, TileCoord},
-    map::{Map as CoreMap, MapOptions},
+    map::{Map as CoreMap, MapOptions, UpdateOrchestrator, UpdatePerformanceMetrics},
     viewport::Viewport,
 };
 
@@ -30,9 +30,11 @@ pub use crate::input::{
     handler::{Action, InputHandler},
 };
 
-    pub use crate::layers::animation::{
-    AnimationManager, EasingType, Transform, ZoomAnimation, ZoomAnimationState,
+pub use crate::layers::animation::{
+    AnimationManager, EasingType, ZoomAnimation, ZoomAnimationState,
 };
+
+pub use crate::core::viewport::Transform;
 
 pub use crate::spatial::{
     clustering::{Cluster, Clustering},
@@ -40,7 +42,7 @@ pub use crate::spatial::{
 };
 
 pub use crate::background::tasks::{
-    BackgroundTask, BackgroundTaskManager, TaskManagerConfig, TaskPriority,
+    BackgroundTaskManager, TaskManagerConfig, TaskPriority,
 };
 
 pub use crate::runtime::{
@@ -61,7 +63,7 @@ pub use crate::ui::{
     elements::UiManager,
     style::{MapStyle, MapThemes},
     traits::*,
-    widget::{Map, MapTheme, MapCursor, MapWidgetConfig, AdvancedMapWidget},
+    widget::{Map, MapTheme},
     UiMapExt,
 };
 
@@ -76,3 +78,12 @@ pub use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
 
 #[cfg(feature = "tokio-runtime")]
 pub use futures::Future;
+
+// Shared traits for common patterns
+pub use crate::traits::{
+    AsyncProcessor, BackgroundTask, Cacheable, CacheStats, CoordinateTransform, 
+    LayerOperations, Renderable, SpatialOperations, ViewportAware, Configurable,
+};
+
+#[cfg(feature = "egui")]
+pub use crate::traits::UiRenderable;

@@ -8,7 +8,6 @@
 
 pub mod types;
 pub mod layer;
-pub mod leaflet;
 pub mod trait_impl;
 pub mod cache;
 pub mod loader;

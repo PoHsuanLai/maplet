@@ -3,7 +3,7 @@
 use super::{TileLayerOptions, TileLevel, TileCache, TileLoader, TilePriority, TileLoaderConfig, TileSource, OpenStreetMapSource};
 use crate::{
     core::{
-        geo::{LatLng, LatLngBounds, Point, TileCoord},
+        geo::{Point, TileCoord},
         viewport::Viewport,
     },
     layers::{
@@ -26,9 +26,6 @@ pub struct TileLayer {
     pub(crate) test_mode: bool,
     
     pub(crate) keep_buffer: u32,
-    pub(crate) last_update_time: std::time::Instant,
-    pub(crate) update_interval_ms: u64,
-    pub(crate) pending_update: bool,
     
     pub(crate) animation_manager: Option<crate::layers::animation::AnimationManager>,
     
@@ -81,9 +78,6 @@ impl TileLayer {
             loading: false,
             test_mode: false,
             keep_buffer: options.keep_buffer,
-            last_update_time: std::time::Instant::now(),
-            update_interval_ms: options.update_interval_ms,
-            pending_update: false,
             animation_manager: Some(AnimationManager::new()),
             render_bounds: options.bounds.clone(),
             boundary_buffer: 0.1, // Default buffer in degrees
@@ -206,20 +200,17 @@ impl TileLayer {
         // Calculate screen position relative to viewport center
         let screen_x = tile_world_x - center_world.x + viewport.size.x / 2.0;
         let screen_y = tile_world_y - center_world.y + viewport.size.y / 2.0;
-
-        let bounds = (
+ 
+        (
             Point::new(screen_x, screen_y),
             Point::new(screen_x + tile_size, screen_y + tile_size),
-        );
-
-        bounds
+        )
     }
 
     pub fn for_testing(id: String, name: String) -> Self {
         println!("🧪 [DEBUG] TileLayer::for_testing() - Creating test tile layer '{}' ({})", name, id);
         let mut layer = Self::new(id, Box::new(OpenStreetMapSource::new()), TileLayerOptions::default()).unwrap();
         layer.test_mode = true;
-        layer.update_interval_ms = 0;
         layer
     }
 
@@ -243,38 +234,7 @@ impl TileLayer {
 
 
 
-    fn tile_bounds(&self, coord: &TileCoord) -> LatLngBounds {
-        let tile_size = self.options.tile_size as f64;
-        let scale = 256.0 * 2_f64.powf(coord.z as f64);
-
-        let nw_x = coord.x as f64 * tile_size;
-        let nw_y = coord.y as f64 * tile_size;
-        let se_x = nw_x + tile_size;
-        let se_y = nw_y + tile_size;
-
-        let d = 180.0 / std::f64::consts::PI;
-
-        let nw_lng = nw_x / scale * 360.0 - 180.0;
-        let nw_lat_rad = std::f64::consts::FRAC_PI_2
-            - 2.0
-                * ((0.5 - nw_y / scale) * 2.0 * std::f64::consts::PI)
-                    .exp()
-                    .atan();
-        let nw_lat = nw_lat_rad * d;
-
-        let se_lng = se_x / scale * 360.0 - 180.0;
-        let se_lat_rad = std::f64::consts::FRAC_PI_2
-            - 2.0
-                * ((0.5 - se_y / scale) * 2.0 * std::f64::consts::PI)
-                    .exp()
-                    .atan();
-        let se_lat = se_lat_rad * d;
-
-        LatLngBounds::new(
-            LatLng::new(se_lat, nw_lng), // south-west
-            LatLng::new(nw_lat, se_lng), // north-east
-        )
-    }
+    // Removed unused tile_bounds method - functionality exists in TileCoord::bounds()
 
 
 
@@ -366,10 +326,6 @@ impl TileLayer {
         false
     }
 
-    pub fn mark_needs_update(&mut self) {
-        self.pending_update = true;
-    }
-
     pub(crate) fn handle_tile_retries(&mut self) -> Result<()> {
         let config = self.tile_loader.config().clone();
 
@@ -424,5 +380,330 @@ impl TileLayer {
 
     pub fn tile_loader_mut(&mut self) -> &mut TileLoader {
         &mut self.tile_loader
+    }
+
+    /// Get tiled pixel bounds for a specific zoom level
+    /// This matches Leaflet's _getTiledPixelBounds method
+    pub fn get_tiled_pixel_bounds(&self, viewport: &Viewport, zoom: u8) -> (Point, Point) {
+        let map_zoom = viewport.zoom;
+        let scale = 2_f64.powf(map_zoom - zoom as f64);
+        let pixel_center = viewport.project(&viewport.center, Some(zoom as f64));
+        let half_size = Point::new(viewport.size.x / (scale * 2.0), viewport.size.y / (scale * 2.0));
+        
+        (
+            pixel_center.subtract(&half_size),
+            pixel_center.add(&half_size),
+        )
+    }
+
+    /// Convert pixel bounds to tile coordinate range
+    /// This matches Leaflet's _pxBoundsToTileRange method
+    pub fn pixel_bounds_to_tile_range(&self, bounds: &(Point, Point), _zoom: u8) -> (Point, Point) {
+        let tile_size = self.options.tile_size as f64;
+        let min = Point::new(
+            (bounds.0.x / tile_size).floor(),
+            (bounds.0.y / tile_size).floor(),
+        );
+        let max = Point::new(
+            (bounds.1.x / tile_size).ceil(),
+            (bounds.1.y / tile_size).ceil(),
+        );
+        (min, max)
+    }
+
+    /// Convert tile range to coordinate list with boundary checking
+    /// Enhanced with improved boundary validation
+    pub fn tile_range_to_coords(&self, range: &(Point, Point), zoom: u8) -> Vec<TileCoord> {
+        let mut coords = Vec::new();
+        let max_coord = (1u32 << zoom) as i32;
+
+        for y in (range.0.y as i32)..=(range.1.y as i32) {
+            for x in (range.0.x as i32)..=(range.1.x as i32) {
+                // Validate Y coordinate
+                if y < 0 || y >= max_coord {
+                    continue;
+                }
+                
+                // Wrap X coordinate for spherical mercator
+                let wrapped_x = ((x % max_coord) + max_coord) % max_coord;
+                
+                let coord = TileCoord {
+                    x: wrapped_x as u32,
+                    y: y as u32,
+                    z: zoom,
+                };
+
+                // Enhanced boundary checking
+                if self.is_valid_tile(&coord) && self.is_tile_within_boundary(&coord) {
+                    coords.push(coord);
+                }
+            }
+        }
+
+        coords
+    }
+
+    /// Enhanced boundary checking with configurable buffer
+    /// This provides the "border" functionality requested by the user
+    pub fn is_tile_within_boundary(&self, coord: &TileCoord) -> bool {
+        if let Some(bounds) = &self.render_bounds {
+            let tile_bounds = self.calculate_tile_bounds_static(coord);
+            
+            // Create buffered bounds for more flexible boundary checking
+            let buffered_bounds = crate::core::geo::LatLngBounds::new(
+                crate::core::geo::LatLng::new(
+                    bounds.south_west.lat - self.boundary_buffer,
+                    bounds.south_west.lng - self.boundary_buffer,
+                ),
+                crate::core::geo::LatLng::new(
+                    bounds.north_east.lat + self.boundary_buffer,
+                    bounds.north_east.lng + self.boundary_buffer,
+                ),
+            );
+            
+            // Check if tile intersects with buffered bounds
+            buffered_bounds.intersects(&tile_bounds)
+        } else {
+            true // No boundary restrictions
+        }
+    }
+
+    /// Check if a tile coordinate is valid for the current configuration
+    fn is_valid_tile(&self, coord: &TileCoord) -> bool {
+        let max_coord = 1u32 << coord.z;
+        coord.x < max_coord && coord.y < max_coord
+            && coord.z >= self.options.min_zoom
+            && coord.z <= self.options.max_zoom
+    }
+
+    /// Static version of calculate_tile_bounds to avoid borrow conflicts
+    fn calculate_tile_bounds_static(&self, coord: &TileCoord) -> crate::core::geo::LatLngBounds {
+        let n = 2.0_f64.powi(coord.z as i32);
+        
+        // Northwest corner
+        let nw_lng = coord.x as f64 / n * 360.0 - 180.0;
+        let nw_lat_rad = std::f64::consts::PI * (1.0 - 2.0 * coord.y as f64 / n);
+        let nw_lat = nw_lat_rad.sinh().atan().to_degrees();
+        
+        // Southeast corner  
+        let se_lng = (coord.x + 1) as f64 / n * 360.0 - 180.0;
+        let se_lat_rad = std::f64::consts::PI * (1.0 - 2.0 * (coord.y + 1) as f64 / n);
+        let se_lat = se_lat_rad.sinh().atan().to_degrees();
+        
+        crate::core::geo::LatLngBounds::new(
+            crate::core::geo::LatLng::new(se_lat, nw_lng), // south-west
+            crate::core::geo::LatLng::new(nw_lat, se_lng), // north-east
+        )
+    }
+
+    /// Main update method that consolidates all tile operations
+    /// This is the unified entry point for all tile loading, similar to Leaflet's _update method
+    pub fn update_tiles(&mut self, viewport: &Viewport) -> Result<()> {
+        let target_zoom = viewport.zoom.floor() as u8;
+        let clamped_zoom = target_zoom.clamp(self.options.min_zoom, self.options.max_zoom);
+
+        // Test mode - minimal tile setup
+        if self.test_mode {
+            self.levels
+                .entry(clamped_zoom)
+                .or_insert_with(|| TileLevel::new(clamped_zoom));
+            return Ok(());
+        }
+
+        // Process any completed tile results first
+        self.process_tile_results()?;
+
+        // Handle zoom animation updates (CSS-style transforms)
+        if let Some(ref mut animation_manager) = self.animation_manager {
+            if let Some(_animation_state) = animation_manager.update() {
+                // Animation transforms are handled by the central orchestrator now
+            }
+        }
+
+        // Calculate current view requirements
+        let tiled_pixel_bounds = self.get_tiled_pixel_bounds(viewport, clamped_zoom);
+        let tile_range = self.pixel_bounds_to_tile_range(&tiled_pixel_bounds, clamped_zoom);
+        let visible_tiles = self.tile_range_to_coords(&tile_range, clamped_zoom);
+
+        // Expanded range for prefetching (Leaflet's keepBuffer)
+        let buffered_range = self.expand_tile_range(&tile_range, self.keep_buffer as i32);
+        let prefetch_tiles = self.tile_range_to_coords(&buffered_range, clamped_zoom);
+
+        // Ensure level exists for current zoom
+        self.levels
+            .entry(clamped_zoom)
+            .or_insert_with(|| TileLevel::new(clamped_zoom));
+
+        // Mark tiles for retention within buffer area (Leaflet's noPruneRange)
+        self.mark_tiles_for_retention(&buffered_range, clamped_zoom);
+
+        // Load visible tiles with highest priority
+        self.load_tiles_batch(&visible_tiles, TilePriority::Visible, clamped_zoom)?;
+
+        // Load prefetch tiles (excluding already visible ones)
+        let prefetch_only: Vec<_> = prefetch_tiles
+            .into_iter()
+            .filter(|coord| !visible_tiles.contains(coord))
+            .collect();
+        self.load_tiles_batch(&prefetch_only, TilePriority::Prefetch, clamped_zoom)?;
+
+        // Clean up old tiles
+        self.prune_tiles(clamped_zoom);
+
+        // Update loading state
+        self.tile_zoom = Some(clamped_zoom);
+        let current_loading_count = self.count_loading_tiles();
+        self.loading_state_changed = current_loading_count != self.last_loading_count;
+        self.last_loading_count = current_loading_count;
+        self.tiles_loading_count = current_loading_count;
+        self.loading = current_loading_count > 0;
+
+        Ok(())
+    }
+
+    /// Expand tile range by buffer amount (Leaflet's keepBuffer)
+    fn expand_tile_range(&self, range: &(Point, Point), buffer: i32) -> (Point, Point) {
+        (
+            Point::new(range.0.x - buffer as f64, range.0.y - buffer as f64),
+            Point::new(range.1.x + buffer as f64, range.1.y + buffer as f64),
+        )
+    }
+
+    /// Mark tiles for retention within buffer area
+    /// This prevents tiles from being pruned during panning
+    fn mark_tiles_for_retention(&mut self, buffer_range: &(Point, Point), zoom: u8) {
+        if let Some(level) = self.levels.get_mut(&zoom) {
+            for (coord, tile) in &mut level.tiles {
+                let in_buffer = coord.x as f64 >= buffer_range.0.x
+                    && coord.x as f64 <= buffer_range.1.x
+                    && coord.y as f64 >= buffer_range.0.y
+                    && coord.y as f64 <= buffer_range.1.y;
+                
+                tile.current = in_buffer;
+                if in_buffer {
+                    tile.retain = true;
+                }
+            }
+        }
+    }
+
+    /// Load a batch of tiles with specified priority
+    fn load_tiles_batch(&self, coords: &[TileCoord], priority: TilePriority, _zoom: u8) -> Result<()> {
+        if coords.is_empty() {
+            return Ok(());
+        }
+
+        // Queue tiles for loading
+        for &coord in coords {
+            if let Err(e) = self.tile_loader.queue_tile(self.tile_source.as_ref(), coord, priority) {
+                #[cfg(feature = "debug")]
+                log::warn!("Failed to queue tile {:?}: {}", coord, e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Prune old tiles (Leaflet's _pruneTiles logic)
+    /// Enhanced with better retention logic and boundary consideration
+    fn prune_tiles(&mut self, current_zoom: u8) {
+        // Extract boundary checking info to avoid borrow conflicts
+        let render_bounds = self.render_bounds.clone();
+        let boundary_buffer = self.boundary_buffer;
+        
+        // Prune tiles within each level
+        for level in self.levels.values_mut() {
+            level.tiles.retain(|coord, tile| {
+                // Always keep current tiles
+                if tile.current {
+                    return true;
+                }
+                
+                // Keep tiles marked for retention
+                if tile.retain {
+                    tile.retain = false; // Reset for next frame
+                    return true;
+                }
+                
+                // Keep recently loaded tiles for a short time
+                if tile.is_loaded() {
+                    if let Some(loaded_time) = tile.loaded_time {
+                        if loaded_time.elapsed().as_secs() < 30 {
+                            return true;
+                        }
+                    }
+                }
+                
+                // Check boundary constraints (inline to avoid borrow conflict)
+                if let Some(ref bounds) = render_bounds {
+                    let tile_bounds = Self::calculate_tile_bounds_static_fn(coord);
+                    
+                    let buffered_bounds = crate::core::geo::LatLngBounds::new(
+                        crate::core::geo::LatLng::new(
+                            bounds.south_west.lat - boundary_buffer,
+                            bounds.south_west.lng - boundary_buffer,
+                        ),
+                        crate::core::geo::LatLng::new(
+                            bounds.north_east.lat + boundary_buffer,
+                            bounds.north_east.lng + boundary_buffer,
+                        ),
+                    );
+                    
+                    if !buffered_bounds.intersects(&tile_bounds) {
+                        return false;
+                    }
+                }
+                
+                false
+            });
+        }
+
+        // Remove levels that are too far from current zoom
+        let levels_to_remove: Vec<_> = self
+            .levels
+            .keys()
+            .filter(|&&zoom| (zoom as i16 - current_zoom as i16).abs() > 2)
+            .cloned()
+            .collect();
+        
+        for zoom in levels_to_remove {
+            #[cfg(feature = "debug")]
+            log::debug!("Pruning level {} (too far from current zoom {})", zoom, current_zoom);
+            self.levels.remove(&zoom);
+        }
+    }
+
+    /// Count tiles currently loading across all levels
+    fn count_loading_tiles(&self) -> usize {
+        self.levels
+            .values()
+            .map(|level| {
+                level
+                    .tiles
+                    .values()
+                    .filter(|tile| tile.loading)
+                    .count()
+            })
+            .sum()
+    }
+
+    /// Static version of calculate_tile_bounds to avoid borrow conflicts
+    fn calculate_tile_bounds_static_fn(coord: &TileCoord) -> crate::core::geo::LatLngBounds {
+        let n = 2.0_f64.powi(coord.z as i32);
+        
+        // Northwest corner
+        let nw_lng = coord.x as f64 / n * 360.0 - 180.0;
+        let nw_lat_rad = std::f64::consts::PI * (1.0 - 2.0 * coord.y as f64 / n);
+        let nw_lat = nw_lat_rad.sinh().atan().to_degrees();
+        
+        // Southeast corner  
+        let se_lng = (coord.x + 1) as f64 / n * 360.0 - 180.0;
+        let se_lat_rad = std::f64::consts::PI * (1.0 - 2.0 * (coord.y + 1) as f64 / n);
+        let se_lat = se_lat_rad.sinh().atan().to_degrees();
+        
+        crate::core::geo::LatLngBounds::new(
+            crate::core::geo::LatLng::new(se_lat, nw_lng), // south-west
+            crate::core::geo::LatLng::new(nw_lat, se_lng), // north-east
+        )
     }
 }

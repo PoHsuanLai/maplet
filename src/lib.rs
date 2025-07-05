@@ -61,6 +61,7 @@ pub mod prelude;
 pub mod rendering;
 pub mod runtime;
 pub mod spatial;
+pub mod traits;
 
 // Feature-gated modules
 #[cfg(feature = "egui")]
@@ -77,6 +78,7 @@ pub use core::{
     geo::{LatLng, LatLngBounds, Point, TileCoord},
     map::{Map as CoreMap, MapOptions},
     viewport::Viewport,
+    viewport::Transform,
 };
 
 pub use layers::{
@@ -90,7 +92,7 @@ pub use input::{events::InputEvent, handler::InputHandler};
 pub use ui::{
     controls::ControlManager, 
     popup::Popup, 
-    widget::{AdvancedMapWidget, Map, MapCursor, MapTheme, MapWidgetConfig, MapWidgetExt},
+    widget::{Map, MapTheme, MapWidgetExt},
     UiMapExt,
 };
 
@@ -102,7 +104,7 @@ pub use rendering::{context::RenderContext, pipeline::RenderPipeline};
 
 pub use spatial::{clustering::Clustering, index::SpatialIndex};
 
-pub use layers::animation::{AnimationManager, EasingType, Transform};
+pub use layers::animation::{AnimationManager, EasingType};
 
 pub use data::{formats::DataFormat, geojson::GeoJsonLayer};
 

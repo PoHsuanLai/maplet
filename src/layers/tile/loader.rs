@@ -605,7 +605,7 @@ impl TileLoader {
 
             // Queue prefetch tiles with appropriate priority
             for coord in limited_coords {
-                let priority = self.get_adaptive_priority(&coord, viewport);
+                let _priority = self.get_adaptive_priority(&coord, viewport);
                 // Note: This would need a tile source reference to actually queue
                 // The actual implementation should receive a tile source parameter
             }
@@ -892,7 +892,7 @@ impl TileWorker {
         }
     }
 
-    async fn download_tile(task: TileTask, config: TileLoaderConfig) -> Result<Vec<u8>> {
+    async fn download_tile(task: TileTask, _config: TileLoaderConfig) -> Result<Vec<u8>> {
         // Set up timeout for the request - use a reasonable timeout for network requests
         let request_timeout = std::time::Duration::from_secs(10); // 10 seconds is reasonable for tile downloads
         let client = &*HTTP_CLIENT;

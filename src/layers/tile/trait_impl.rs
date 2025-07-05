@@ -16,7 +16,7 @@ impl LayerTrait for TileLayer {
     }
 
     fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
-        if !self.visible() {
+        if !self.is_visible() {
             return Ok(());
         }
 
@@ -70,6 +70,5 @@ impl LayerTrait for TileLayer {
         }
         Ok(())
     }
-
 }
 

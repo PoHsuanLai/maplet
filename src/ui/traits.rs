@@ -1,16 +1,12 @@
 use crate::{
-    core::{geo::LatLng, viewport::Viewport},
+    core::geo::LatLng,
     Result,
 };
-use egui::{Rect, Response, Ui, Vec2};
+use egui::{Rect, Ui, Vec2};
 use std::any::Any;
 
-/// Core trait for any UI element that can be rendered
-pub trait Renderable {
-    fn render(&mut self, ui: &mut Ui, rect: Rect) -> Result<Response>;
-    fn is_visible(&self) -> bool;
-    fn set_visible(&mut self, visible: bool);
-}
+// Renderable trait moved to shared traits.rs to avoid duplication
+pub use crate::traits::UiRenderable as Renderable;
 
 /// Trait for UI elements that can be positioned
 pub trait Positionable {
@@ -39,11 +35,8 @@ pub trait EventHandler {
     fn can_handle(&self, event: &Self::Event) -> bool;
 }
 
-/// Trait for components that respond to viewport changes
-pub trait ViewportAware {
-    fn on_viewport_changed(&mut self, viewport: &Viewport) -> Result<()>;
-    fn requires_viewport_updates(&self) -> bool;
-}
+// ViewportAware trait moved to shared traits.rs to avoid duplication
+pub use crate::traits::ViewportAware;
 
 /// Trait for components that can be dynamically cast
 pub trait AsAny {

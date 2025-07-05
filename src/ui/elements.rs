@@ -291,10 +291,8 @@ impl Renderable for ZoomControl {
     }
 }
 
-/// Attribution component - replaces duplicated attribution logic
 pub struct Attribution {
     text: String,
-    position: Position,
     visible: bool,
 }
 
@@ -302,7 +300,6 @@ impl Attribution {
     pub fn new(text: String) -> Self {
         Self {
             text,
-            position: Position::BottomLeft,
             visible: true,
         }
     }

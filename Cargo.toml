@@ -19,20 +19,8 @@ tokio-runtime = ["dep:tokio"]
 
 animations = []
 
-clustering = []
-heatmaps = []
-vector-layers = []
-offline-tiles = []
-custom-projections = []
-
-performance-high = []
-performance-low = []
-
-tile-sources-osm = []
-tile-sources-mapbox = []
-tile-sources-custom = []
-
-app = ["egui", "wasm", "tokio-runtime", "animations", "clustering", "heatmaps", "vector-layers"]
+# Consolidated feature for full application build
+app = ["egui", "wasm", "tokio-runtime", "animations"]
 
 debug = ["dep:log", "dep:env_logger"]
 serde-support = ["dep:serde"]

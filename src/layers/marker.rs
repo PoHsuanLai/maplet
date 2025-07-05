@@ -5,9 +5,6 @@ use crate::{
     Result,
 };
 
-use once_cell::sync::Lazy;
-use image;
-
 pub struct Marker {
     properties: LayerProperties,
     position: LatLng,
@@ -37,16 +34,6 @@ impl Marker {
         self.position = position;
     }
 }
-
-static MARKER_BYTES: &[u8] = include_bytes!("../../assets/images/marker-icon.png");
-
-// Decode once to RGBA
-static MARKER_RGBA: Lazy<Vec<u8>> = Lazy::new(|| {
-    let img = image::load_from_memory(MARKER_BYTES).expect("embedded marker icon should decode");
-    img.to_rgba8().into_raw()
-});
-
-static MARKER_SIZE: (u32, u32) = (25, 41); // standard leaflet icon
 
 impl LayerTrait for Marker {
     crate::impl_layer_trait!(Marker, properties);

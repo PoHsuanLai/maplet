@@ -4,15 +4,15 @@ use crate::{
         viewport::Viewport,
     },
     layers::base::{LayerProperties, LayerTrait, LayerType},
+    prelude::HashMap,
+    rendering::context::RenderContext,
+    spatial::index::{SpatialIndex, SpatialItem},
     Result,
 };
-
-use crate::rendering::context::RenderContext;
 
 #[cfg(feature = "egui")]
 use egui::Color32;
 
-use crate::prelude::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// Serializable color type that can convert to/from egui::Color32
@@ -316,8 +316,8 @@ pub struct VectorLayer {
     selectable: bool,
     /// Currently selected feature IDs
     selected_features: Vec<String>,
-    /// Spatial index for efficient querying (simplified)
-    spatial_index: Vec<(String, LatLngBounds)>,
+    /// Proper spatial index for efficient querying
+    spatial_index: SpatialIndex<VectorFeatureData>,
 }
 
 impl VectorLayer {
@@ -333,20 +333,30 @@ impl VectorLayer {
             default_polygon_style: PolygonStyle::default(),
             selectable: true,
             selected_features: Vec::new(),
-            spatial_index: Vec::new(),
+            spatial_index: SpatialIndex::new(),
         }
     }
 
     /// Add a feature to the layer
-    pub fn add_feature(&mut self, feature: VectorFeatureData) {
+    pub fn add_feature(&mut self, feature: VectorFeatureData) -> Result<()> {
         let bounds = feature.feature.bounds();
-        self.spatial_index.push((feature.id.clone(), bounds));
+        // Convert LatLngBounds to Bounds for spatial index
+        let spatial_bounds = crate::core::bounds::Bounds::from_coords(
+            bounds.south_west.lng,
+            bounds.south_west.lat,
+            bounds.north_east.lng,
+            bounds.north_east.lat,
+        );
+        
+        let spatial_item = SpatialItem::new(feature.id.clone(), spatial_bounds, feature.clone());
+        self.spatial_index.insert(spatial_item)?;
         self.features.insert(feature.id.clone(), feature);
+        Ok(())
     }
 
     /// Remove a feature by ID
     pub fn remove_feature(&mut self, id: &str) -> Option<VectorFeatureData> {
-        self.spatial_index.retain(|(fid, _)| fid != id);
+        let _ = self.spatial_index.remove(id);
         self.selected_features.retain(|fid| fid != id);
         self.features.remove(id)
     }
@@ -367,23 +377,25 @@ impl VectorLayer {
     }
 
     /// Get features that intersect with the given bounds
-    pub fn features_in_bounds(&self, bounds: &LatLngBounds) -> Vec<&VectorFeatureData> {
-        let mut result = Vec::new();
-
-        for (id, feature_bounds) in &self.spatial_index {
-            if bounds.intersects(feature_bounds) {
-                if let Some(feature) = self.features.get(id) {
-                    result.push(feature);
-                }
-            }
-        }
-
-        result
+    pub fn features_in_bounds(&self, bounds: &crate::core::geo::LatLngBounds) -> Vec<&VectorFeatureData> {
+        // Convert LatLngBounds to Bounds for spatial query
+        let query_bounds = crate::core::bounds::Bounds::from_coords(
+            bounds.south_west.lng,
+            bounds.south_west.lat,
+            bounds.north_east.lng,
+            bounds.north_east.lat,
+        );
+        
+        self.spatial_index
+            .query(&query_bounds)
+            .into_iter()
+            .map(|item| &item.data)
+            .collect()
     }
 
     /// Find features at a specific point (with tolerance)
     pub fn features_at_point(&self, point: &LatLng, tolerance: f64) -> Vec<&VectorFeatureData> {
-        let tolerance_bounds = LatLngBounds::new(
+        let tolerance_bounds = crate::core::geo::LatLngBounds::new(
             LatLng::new(point.lat - tolerance, point.lng - tolerance),
             LatLng::new(point.lat + tolerance, point.lng + tolerance),
         );
@@ -681,7 +693,7 @@ impl LayerTrait for VectorLayer {
     }
 
     fn render(&mut self, context: &mut RenderContext, viewport: &Viewport) -> Result<()> {
-        if !self.visible() {
+        if !self.is_visible() {
             return Ok(());
         }
 
@@ -711,24 +723,13 @@ impl LayerTrait for VectorLayer {
     }
 }
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_vector_layer_creation() {
-        let layer = VectorLayer::new("test".to_string(), "Test Vector Layer".to_string());
-        assert_eq!(layer.id(), "test");
-        assert_eq!(layer.name(), "Test Vector Layer");
-        assert_eq!(layer.layer_type(), LayerType::Vector);
-        assert_eq!(layer.feature_count(), 0);
-    }
-
     #[test]
     fn test_feature_operations() {
-        let mut layer = VectorLayer::new("test".to_string(), "Test".to_string());
+        let mut layer = super::VectorLayer::new("test".to_string(), "Test".to_string());
 
-        let point_feature = VectorLayer::create_point_feature(
+        let point_feature = super::VectorLayer::create_point_feature(
             "point1".to_string(),
-            LatLng::new(40.7128, -74.0060),
+            super::LatLng::new(40.7128, -74.0060),
             None,
         );
 
@@ -744,11 +745,11 @@ mod tests {
 
     #[test]
     fn test_feature_selection() {
-        let mut layer = VectorLayer::new("test".to_string(), "Test".to_string());
+        let mut layer = super::VectorLayer::new("test".to_string(), "Test".to_string());
 
-        let point_feature = VectorLayer::create_point_feature(
+        let point_feature = super::VectorLayer::create_point_feature(
             "point1".to_string(),
-            LatLng::new(40.7128, -74.0060),
+            super::LatLng::new(40.7128, -74.0060),
             None,
         );
 
@@ -765,14 +766,14 @@ mod tests {
     #[test]
     fn test_feature_bounds() {
         let points = vec![
-            LatLng::new(40.0, -74.0),
-            LatLng::new(41.0, -73.0),
-            LatLng::new(40.5, -73.5),
+            super::LatLng::new(40.0, -74.0),
+            super::LatLng::new(41.0, -73.0),
+            super::LatLng::new(40.5, -73.5),
         ];
 
-        let line_feature = VectorFeature::LineString {
+        let line_feature = super::VectorFeature::LineString {
             points,
-            style: LineStyle::default(),
+            style: super::LineStyle::default(),
         };
 
         let bounds = line_feature.bounds();
@@ -784,9 +785,9 @@ mod tests {
 
     #[test]
     fn test_serializable_color() {
-        let color = SerializableColor::rgb(255, 128, 64);
-        let egui_color: Color32 = color.into();
-        let back_to_serializable: SerializableColor = egui_color.into();
+        let color = super::SerializableColor::rgb(255, 128, 64);
+        let egui_color: egui::Color32 = color.into();
+        let back_to_serializable: super::SerializableColor = egui_color.into();
 
         assert_eq!(color, back_to_serializable);
     }

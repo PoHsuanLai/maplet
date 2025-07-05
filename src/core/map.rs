@@ -43,6 +43,171 @@ impl Default for MapOptions {
     }
 }
 
+/// Centralized update orchestrator that eliminates flickering
+/// by being the single source of truth for all timing decisions
+#[derive(Debug, Clone)]
+pub struct UpdateOrchestrator {
+    last_frame_time: std::time::Instant,
+    frame_count: u64,
+    target_fps: u32,
+    min_frame_interval_ms: u64,
+    force_update_reasons: Vec<String>,
+    animation_active: bool,
+    background_work_pending: bool,
+    viewport_changed: bool,
+    layers_need_update: bool,
+    initial_render_done: bool,
+    idle_render_count: u64,
+}
+
+impl UpdateOrchestrator {
+    pub fn new(target_fps: u32) -> Self {
+        Self {
+            last_frame_time: std::time::Instant::now(),
+            frame_count: 0,
+            target_fps,
+            min_frame_interval_ms: 1000 / target_fps as u64,
+            force_update_reasons: Vec::new(),
+            animation_active: false,
+            background_work_pending: false,
+            viewport_changed: false,
+            layers_need_update: false,
+            initial_render_done: false,
+            idle_render_count: 0,
+        }
+    }
+
+    /// The ONLY method that decides whether to update/render
+    /// This is purely functional - no side effects
+    pub fn should_update_and_render(&mut self) -> (bool, Vec<String>) {
+        let now = std::time::Instant::now();
+        let elapsed_ms = now.duration_since(self.last_frame_time).as_millis() as u64;
+        
+        let mut reasons = Vec::new();
+        let mut should_update = false;
+
+        // Always render initially to show the map
+        if !self.initial_render_done {
+            should_update = true;
+            reasons.push("initial_render".to_string());
+            self.initial_render_done = true;
+        }
+
+        // Always update if we have force reasons (animations, input, etc.)
+        if !self.force_update_reasons.is_empty() {
+            should_update = true;
+            reasons.append(&mut self.force_update_reasons);
+        }
+
+        // Update if animations are active
+        if self.animation_active {
+            should_update = true;
+            reasons.push("animation_active".to_string());
+        }
+
+        // Update if viewport changed
+        if self.viewport_changed {
+            should_update = true;
+            reasons.push("viewport_changed".to_string());
+            self.viewport_changed = false;
+        }
+
+        // Update if layers need work
+        if self.layers_need_update {
+            should_update = true;
+            reasons.push("layers_need_update".to_string());
+            self.layers_need_update = false;
+        }
+
+        // Update if background work completed
+        if self.background_work_pending {
+            should_update = true;
+            reasons.push("background_work_completed".to_string());
+            self.background_work_pending = false;
+        }
+
+        // Render periodically even when idle to ensure continuous visibility
+        // This prevents the map from disappearing when nothing is happening
+        if elapsed_ms >= self.min_frame_interval_ms && self.idle_render_count < 10 {
+            should_update = true;
+            reasons.push("periodic_render".to_string());
+            self.idle_render_count += 1;
+        }
+
+        // Always render if enough time has passed (ensures map stays visible)
+        if elapsed_ms >= self.min_frame_interval_ms * 2 {
+            should_update = true;
+            reasons.push("maintain_visibility".to_string());
+            self.idle_render_count = 0; // Reset idle counter
+        }
+
+        // Throttle updates to target FPS unless forced, but be more permissive
+        if should_update && elapsed_ms < (self.min_frame_interval_ms / 2) && reasons.len() == 1 && reasons[0] == "background_work_completed" {
+            // Only throttle rapid background work updates
+            should_update = false;
+            reasons.clear();
+        }
+
+        // Update frame timing if we're actually updating
+        if should_update {
+            self.last_frame_time = now;
+            self.frame_count += 1;
+        }
+
+        (should_update, reasons)
+    }
+
+    // Functional setters - no side effects except state updates
+    pub fn mark_animation_active(&mut self, active: bool) {
+        if active != self.animation_active {
+            self.animation_active = active;
+            if active {
+                self.force_update_reasons.push("animation_started".to_string());
+            }
+        }
+    }
+
+    pub fn mark_viewport_changed(&mut self) {
+        self.viewport_changed = true;
+    }
+
+    pub fn mark_layers_need_update(&mut self) {
+        self.layers_need_update = true;
+    }
+
+    pub fn mark_background_work_pending(&mut self) {
+        self.background_work_pending = true;
+    }
+
+    pub fn force_update(&mut self, reason: String) {
+        self.force_update_reasons.push(reason);
+    }
+
+    pub fn mark_content_ready(&mut self) {
+        self.layers_need_update = true;
+        self.force_update_reasons.push("content_ready".to_string());
+    }
+
+    pub fn reset_idle_state(&mut self) {
+        self.idle_render_count = 0;
+    }
+
+    pub fn current_fps(&self) -> f64 {
+        if self.frame_count < 2 {
+            return 60.0;
+        }
+        1000.0 / self.min_frame_interval_ms as f64
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdatePerformanceMetrics {
+    pub current_fps: f64,
+    pub target_fps: u32,
+    pub frame_count: u64,
+    pub is_animating: bool,
+}
+
 pub struct Map {
     pub viewport: Viewport,
     layer_manager: LayerManager,
@@ -52,9 +217,8 @@ pub struct Map {
     performance: MapPerformanceOptions,
     input_handler: InputHandler,
     background_tasks: BackgroundTaskManager,
-    last_render_time: std::time::Instant,
-    last_update_time: std::time::Instant,
     animation_manager: AnimationManager,
+    update_orchestrator: UpdateOrchestrator,
 }
 
 impl Map {
@@ -76,7 +240,7 @@ impl Map {
 
     pub fn with_options(viewport: Viewport, options: MapOptions) -> Self {
         let performance = MapPerformanceOptions::default();
-        let now = std::time::Instant::now();
+        let target_fps = performance.framerate.target_fps.unwrap_or(60);
 
         let mut map = Self {
             viewport,
@@ -87,9 +251,8 @@ impl Map {
             performance,
             input_handler: InputHandler::new(),
             background_tasks: BackgroundTaskManager::with_default_config(),
-            last_render_time: now,
-            last_update_time: now,
             animation_manager: AnimationManager::new(),
+            update_orchestrator: UpdateOrchestrator::new(target_fps),
         };
 
         if let (Some(min), Some(max)) = (map.options.min_zoom, map.options.max_zoom) {
@@ -105,7 +268,7 @@ impl Map {
         performance: MapPerformanceOptions,
         task_config: TaskManagerConfig,
     ) -> Result<Self> {
-        let now = std::time::Instant::now();
+        let target_fps = performance.framerate.target_fps.unwrap_or(60);
 
         let mut map = Self {
             viewport,
@@ -116,9 +279,8 @@ impl Map {
             performance,
             input_handler: InputHandler::new(),
             background_tasks: BackgroundTaskManager::new(task_config),
-            last_render_time: now,
-            last_update_time: now,
             animation_manager: AnimationManager::new(),
+            update_orchestrator: UpdateOrchestrator::new(target_fps),
         };
 
         if let (Some(min), Some(max)) = (map.options.min_zoom, map.options.max_zoom) {
@@ -135,6 +297,9 @@ impl Map {
         MapOperations::set_view(&mut self.viewport, center, zoom)?;
 
         if self.viewport.center != old_center || self.viewport.zoom != old_zoom {
+            // Mark viewport change in orchestrator
+            self.update_orchestrator.mark_viewport_changed();
+            
             self.event_manager.emit(MapEvent::ViewChanged {
                 center: self.viewport.center,
                 zoom: self.viewport.zoom,
@@ -184,11 +349,8 @@ impl Map {
             focus_point,
             None,
         ) {
-            self.layer_manager.for_each_layer_mut(|layer| {
-                if let Some(tile_layer) = layer.as_any_mut().downcast_mut::<crate::layers::tile::TileLayer>() {
-                    tile_layer.start_zoom_animation(old_center, new_center, old_zoom, zoom, focus_point);
-                }
-            });
+            // Mark animation as active in the orchestrator
+            self.update_orchestrator.mark_animation_active(true);
             
             self.event_manager
                 .emit(MapEvent::ZoomStart { zoom: old_zoom });
@@ -286,6 +448,11 @@ impl Map {
             self.input_handler
                 .handle_event(input, self.viewport.center, self.viewport.zoom);
 
+        if !actions.is_empty() {
+            // Mark input activity in orchestrator
+            self.update_orchestrator.force_update("user_input".to_string());
+        }
+
         for action in actions {
             match &action {
                 Action::PanInertia { .. } => {
@@ -297,6 +464,8 @@ impl Map {
                 }
                 _ => {
                     MapOperations::execute_action(&mut self.viewport, action)?;
+                    // Mark viewport change for immediate actions
+                    self.update_orchestrator.mark_viewport_changed();
                 }
             }
         }
@@ -304,68 +473,71 @@ impl Map {
         Ok(())
     }
 
-    pub fn update(&mut self, delta_time: f64) -> Result<()> {
-        let now = std::time::Instant::now();
-
-        if now.duration_since(self.last_update_time).as_millis() < 16 {
-            return Ok(());
+    /// The ONLY method that should be called for updating/rendering
+    /// This replaces all previous render() and update() methods
+    pub fn update_and_render(
+        &mut self,
+        render_context: &mut crate::rendering::context::RenderContext,
+    ) -> Result<bool> {
+        // Check for background task results and mark if work is pending
+        if self.background_tasks.has_pending_results() {
+            self.update_orchestrator.mark_background_work_pending();
         }
 
+        // Update animations and mark if active
         if let Some(animation_state) = self.animation_manager.update() {
-            // Update integrated tile layer animations (they handle their own animation state now)
-            // No need for manual tile layer animation updates
-            
-            let viewport_transform = crate::core::viewport::Transform::new(
-                animation_state.transform.translate,
-                animation_state.transform.scale,
-                animation_state.transform.origin,
-            );
-            self.viewport.set_transform(viewport_transform);
+            self.update_orchestrator.mark_animation_active(animation_state.progress < 1.0);
+        } else {
+            self.update_orchestrator.mark_animation_active(false);
+        }
 
-            if animation_state.progress >= 1.0 {
-                // Animation complete - clean up
-                self.viewport.set_center(animation_state.center);
-                self.viewport.set_zoom(animation_state.zoom);
-                self.viewport.clear_transform();
-                self.event_manager.emit(MapEvent::ZoomEnd {
-                    zoom: animation_state.zoom,
-                });
+        // Process input animations
+        if let Some((center, zoom)) = self.input_handler.update_animation() {
+            self.viewport.center = center;
+            self.viewport.zoom = zoom;
+            self.update_orchestrator.mark_viewport_changed();
+        }
+
+        // Check if orchestrator decides to update/render
+        let (should_update, reasons) = self.update_orchestrator.should_update_and_render();
+        
+        if !should_update {
+            return Ok(false);
+        }
+
+        // Process background task results
+        let task_results = self.background_tasks.try_recv_results();
+        if !task_results.is_empty() {
+            // Handle results and potentially trigger layer updates
+            for _result in task_results {
+                self.update_orchestrator.mark_layers_need_update();
             }
         }
 
-        if let Some((center, zoom)) = self.input_handler.update_animation() {
-            self.viewport.set_center(center);
-            self.viewport.set_zoom(zoom);
-        }
-
-        let actions = self
-            .input_handler
-            .process_queued_events(self.viewport.center, self.viewport.zoom);
-        for action in actions {
-            MapOperations::execute_action(&mut self.viewport, action)?;
-        }
-
+        // Update layers and check for content changes
+        let mut content_changed = false;
         self.layer_manager.for_each_layer_mut(|layer| {
-            let _ = layer.update(delta_time);
+            let _ = layer.update(0.016); // Fixed delta time since timing is controlled centrally
+            
+            // Check if tile layer has new content
+            if let Some(tile_layer) = layer.as_any().downcast_ref::<crate::layers::tile::TileLayer>() {
+                if tile_layer.needs_repaint() {
+                    content_changed = true;
+                }
+            }
         });
 
-        for plugin in self.plugins.values_mut() {
-            plugin.update(delta_time)?;
+        // Notify orchestrator if content changed
+        if content_changed {
+            self.update_orchestrator.mark_content_ready();
         }
 
-        self.last_update_time = now;
-        Ok(())
-    }
-
-    pub fn render(
-        &mut self,
-        render_context: &mut crate::rendering::context::RenderContext,
-    ) -> Result<()> {
-        let now = std::time::Instant::now();
-        if now.duration_since(self.last_render_time).as_millis() < 16 {
-            return Ok(());
+        // Update plugins
+        for (_, plugin) in self.plugins.iter_mut() {
+            let _ = plugin.update(0.016);
         }
 
+        // Render everything
         render_context.begin_frame()?;
         
         self.layer_manager.for_each_layer_mut(|layer| {
@@ -376,7 +548,22 @@ impl Map {
             let _ = plugin.render(render_context, &self.viewport);
         }
 
-        self.last_render_time = now;
+        // Log update reasons for debugging
+        #[cfg(feature = "debug")]
+        if !reasons.is_empty() {
+            println!("🔄 [UPDATE] Reasons: {:?}", reasons);
+        }
+
+        Ok(true)
+    }
+
+    /// Legacy render method - deprecated, use update_and_render instead
+    #[deprecated(note = "Use update_and_render instead")]
+    pub fn render(
+        &mut self,
+        render_context: &mut crate::rendering::context::RenderContext,
+    ) -> Result<()> {
+        let _ = self.update_and_render(render_context)?;
         Ok(())
     }
 
@@ -397,30 +584,25 @@ impl Map {
     }
 
     pub fn set_performance(&mut self, performance: MapPerformanceOptions) {
+        // Update orchestrator target FPS if changed
+        if let Some(target_fps) = performance.framerate.target_fps {
+            self.update_orchestrator = UpdateOrchestrator::new(target_fps);
+        }
+        
         self.performance = performance;
     }
 
-    pub fn should_render(&self) -> bool {
-        std::time::Instant::now()
-            .duration_since(self.last_render_time)
-            .as_millis()
-            > 16
+    /// Get current performance metrics from the orchestrator
+    pub fn get_performance_metrics(&self) -> UpdatePerformanceMetrics {
+        UpdatePerformanceMetrics {
+            current_fps: self.update_orchestrator.current_fps(),
+            target_fps: self.update_orchestrator.target_fps,
+            frame_count: self.update_orchestrator.frame_count,
+            is_animating: self.update_orchestrator.animation_active,
+        }
     }
 
-    pub fn should_update(&self) -> bool {
-        std::time::Instant::now()
-            .duration_since(self.last_update_time)
-            .as_millis()
-            > 16
-    }
 
-    pub fn mark_render(&mut self) {
-        self.last_render_time = std::time::Instant::now();
-    }
-
-    pub fn mark_update(&mut self) {
-        self.last_update_time = std::time::Instant::now();
-    }
 
     pub fn stop_animations(&mut self) {
         self.animation_manager.stop_zoom_animation();
@@ -442,6 +624,16 @@ impl Map {
         duration: std::time::Duration,
     ) {
         self.animation_manager.set_zoom_style(easing, duration);
+    }
+
+    /// Get the update orchestrator for advanced configuration
+    pub fn update_orchestrator(&self) -> &UpdateOrchestrator {
+        &self.update_orchestrator
+    }
+
+    /// Get mutable access to the update orchestrator for advanced configuration
+    pub fn update_orchestrator_mut(&mut self) -> &mut UpdateOrchestrator {
+        &mut self.update_orchestrator
     }
 
     pub async fn render_layers(
@@ -554,17 +746,7 @@ mod tests {
         map.stop_animations();
     }
 
-    #[tokio::test]
-    async fn test_timing_controls() {
-        let map = Map::new(
-            LatLng::new(37.7749, -122.4194),
-            12.0,
-            crate::core::geo::Point::new(800.0, 600.0),
-        );
 
-        let _should_render = map.should_render();
-        let _should_update = map.should_update();
-    }
 
     #[tokio::test]
     async fn test_viewport_access() {

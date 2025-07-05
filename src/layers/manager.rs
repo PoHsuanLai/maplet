@@ -106,7 +106,7 @@ impl LayerManager {
         for layer_id in self.render_order.clone() {
             if let Some(layer) = self.layers.get_mut(&layer_id) {
                 // Only render visible layers that intersect with viewport
-                if layer.visible() && layer.intersects_bounds(&viewport_bounds) {
+                if layer.is_visible() && layer.intersects_bounds(&viewport_bounds) {
                     layer.render(context, viewport)?;
                 }
             }

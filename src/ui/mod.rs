@@ -17,7 +17,7 @@ pub use traits::{
 
 pub use elements::{Attribution, Button, Position, UiManager, ZoomControl};
 
-pub use widget::{AdvancedMapWidget, Map, MapCursor, MapTheme, MapWidgetConfig, MapWidgetExt};
+pub use widget::{Map, MapTheme, MapWidgetExt};
 
 pub use style::{
     AttributionStyle, MapStyle, MapThemes, MarkerStyle, StyleExt, VectorStyle, ZoomControlStyle,

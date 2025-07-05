@@ -90,7 +90,7 @@ impl MapletApp {
 }
 
 impl eframe::App for MapletApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         static mut UPDATE_COUNTER: u64 = 0;
         unsafe {
             UPDATE_COUNTER += 1;

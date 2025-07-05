@@ -65,6 +65,22 @@ impl Transform {
             && self.translate.x.abs() < 0.1
             && self.translate.y.abs() < 0.1
     }
+
+    /// Interpolate between two transforms with easing (moved from animation.rs)
+    pub fn lerp_with_easing(&self, other: &Transform, t: f64, easing: crate::layers::animation::EasingType) -> Transform {
+        let eased_t = easing.apply(t);
+        Transform {
+            translate: Point::new(
+                self.translate.x + (other.translate.x - self.translate.x) * eased_t,
+                self.translate.y + (other.translate.y - self.translate.y) * eased_t,
+            ),
+            scale: self.scale + (other.scale - self.scale) * eased_t,
+            origin: Point::new(
+                self.origin.x + (other.origin.x - self.origin.x) * eased_t,
+                self.origin.y + (other.origin.y - self.origin.y) * eased_t,
+            ),
+        }
+    }
 }
 
 impl Viewport {
@@ -135,18 +151,15 @@ impl Viewport {
         let z = zoom.unwrap_or(self.zoom);
         let scale = 256.0 * 2_f64.powf(z);
 
-        // Spherical Mercator projection (matches Leaflet's SphericalMercator)
-        let d = std::f64::consts::PI / 180.0;
-        let max_lat = 85.0511287798; // Leaflet's SphericalMercator.MAX_LATITUDE
-        let lat = lat_lng.lat.clamp(-max_lat, max_lat);
-        let lat_rad = lat * d;
-        let sin_lat = lat_rad.sin();
-
+        // Use the core Web Mercator projection from geo.rs
+        let mercator = lat_lng.to_mercator();
+        
+        // Convert from raw Mercator coordinates to pixel coordinates at the given zoom
         // Leaflet's transformation: scale = 0.5 / (π * R), offset = 0.5
         // Where R = 6378137 (earth radius)
-        let x = (lat_lng.lng + 180.0) / 360.0 * scale;
-        let y =
-            (0.5 - 0.25 * ((1.0 + sin_lat) / (1.0 - sin_lat)).ln() / std::f64::consts::PI) * scale;
+        const EARTH_RADIUS: f64 = 6378137.0;
+        let x = (mercator.x + std::f64::consts::PI * EARTH_RADIUS) / (2.0 * std::f64::consts::PI * EARTH_RADIUS) * scale;
+        let y = (std::f64::consts::PI * EARTH_RADIUS - mercator.y) / (2.0 * std::f64::consts::PI * EARTH_RADIUS) * scale;
 
         Point::new(x, y)
     }
@@ -157,18 +170,13 @@ impl Viewport {
         let z = zoom.unwrap_or(self.zoom);
         let scale = 256.0 * 2_f64.powf(z);
 
-        let d = 180.0 / std::f64::consts::PI;
-        let lng = point.x / scale * 360.0 - 180.0;
+        // Convert pixel coordinates back to raw Mercator coordinates
+        const EARTH_RADIUS: f64 = 6378137.0;
+        let mercator_x = (point.x / scale) * (2.0 * std::f64::consts::PI * EARTH_RADIUS) - std::f64::consts::PI * EARTH_RADIUS;
+        let mercator_y = std::f64::consts::PI * EARTH_RADIUS - (point.y / scale) * (2.0 * std::f64::consts::PI * EARTH_RADIUS);
 
-        let y_normalized = point.y / scale;
-        let lat_rad = std::f64::consts::FRAC_PI_2
-            - 2.0
-                * ((0.5 - y_normalized) * 2.0 * std::f64::consts::PI)
-                    .exp()
-                    .atan();
-        let lat = lat_rad * d;
-
-        LatLng::new(lat, lng)
+        // Use the core Web Mercator inverse projection from geo.rs
+        LatLng::from_mercator(Point::new(mercator_x, mercator_y))
     }
 
     /// Gets or calculates the pixel origin for this viewport

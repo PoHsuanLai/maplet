@@ -1,4 +1,4 @@
-use crate::core::geo::{LatLng, Point, TileCoord};
+use crate::core::geo::{LatLng, Point};
 use crate::prelude::HashMap;
 
 /// Coordinate reference system definitions
@@ -67,28 +67,6 @@ impl Converter {
             .iter()
             .map(|p| self.convert_coordinates(*p, from, to))
             .collect()
-    }
-
-    /// Converts tile coordinates to geographic bounds
-    pub fn tile_to_bounds(tile: &TileCoord) -> crate::core::geo::LatLngBounds {
-        tile.bounds()
-    }
-
-    /// Converts geographic bounds to tile coordinates at a zoom level
-    pub fn bounds_to_tiles(bounds: &crate::core::geo::LatLngBounds, zoom: u8) -> Vec<TileCoord> {
-        let nw_tile = TileCoord::from_lat_lng(&bounds.north_east, zoom);
-        let se_tile = TileCoord::from_lat_lng(
-            &LatLng::new(bounds.south_west.lat, bounds.north_east.lng),
-            zoom,
-        );
-
-        let mut tiles = Vec::new();
-        for x in nw_tile.x..=se_tile.x {
-            for y in nw_tile.y..=se_tile.y {
-                tiles.push(TileCoord::new(x, y, zoom));
-            }
-        }
-        tiles
     }
 
     /// WGS84 to UTM conversion (simplified)
@@ -303,8 +281,8 @@ mod tests {
     fn test_tile_conversion() {
         // First create a tile coordinate from NYC location
         let nyc = LatLng::new(40.7128, -74.0060);
-        let tile = TileCoord::from_lat_lng(&nyc, 10);
-        let bounds = Converter::tile_to_bounds(&tile);
+        let tile = crate::core::geo::TileCoord::from_lat_lng(&nyc, 10);
+        let bounds = tile.bounds(); // Use TileCoord method directly
 
         // Should contain NYC approximately
         assert!(bounds.contains(&nyc));
