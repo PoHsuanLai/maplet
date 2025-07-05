@@ -46,7 +46,7 @@ pub use crate::background::tasks::{
 };
 
 pub use crate::runtime::{
-    runtime, spawn, spawn_with_result, AsyncHandle, AsyncHandleWithResult, AsyncSpawner,
+    runtime, spawn, spawn_with_result, AsyncHandle, AsyncHandleWithResult, AsyncProcessor, AsyncSpawner,
 };
 
 pub use crate::layers::tile::{
@@ -81,7 +81,7 @@ pub use futures::Future;
 
 // Shared traits for common patterns
 pub use crate::traits::{
-    AsyncProcessor, BackgroundTask, Cacheable, CacheStats, CoordinateTransform, 
+    BackgroundTask, Cacheable, CacheStats, CoordinateTransform, 
     LayerOperations, Renderable, SpatialOperations, ViewportAware, Configurable,
 };
 

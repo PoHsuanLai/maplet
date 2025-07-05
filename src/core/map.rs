@@ -501,7 +501,10 @@ impl Map {
         // Check if orchestrator decides to update/render
         let (should_update, reasons) = self.update_orchestrator.should_update_and_render();
         
-        if !should_update {
+        // Be more permissive - always render if we have layers that need rendering
+        let force_render = self.layer_manager.len() > 0;
+        
+        if !should_update && !force_render {
             return Ok(false);
         }
 

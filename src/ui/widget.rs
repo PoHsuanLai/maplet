@@ -173,18 +173,30 @@ fn get_or_create_core_map(
     rect: Rect,
     map_id: egui::Id,
 ) -> Arc<Mutex<CoreMap>> {
+    // Try to get existing map first
     if let Some(core_map) = ctx.memory(|mem| mem.data.get_temp::<Arc<Mutex<CoreMap>>>(map_id)) {
+        // Use a more robust locking mechanism to prevent race conditions
+        // Only update size if we can immediately acquire the lock
         if let Ok(mut core_map_guard) = core_map.try_lock() {
             let current_size = core_map_guard.viewport().size;
             let new_size = Point::new(rect.width() as f64, rect.height() as f64);
             
-            if (current_size.x - new_size.x).abs() > 1.0 || (current_size.y - new_size.y).abs() > 1.0 {
+            // Only update size if there's a significant change (prevents unnecessary updates)
+            if (current_size.x - new_size.x).abs() > 2.0 || (current_size.y - new_size.y).abs() > 2.0 {
                 core_map_guard.viewport_mut().set_size(new_size);
+                // Mark update orchestrator to ensure proper rendering
+                core_map_guard.update_orchestrator_mut().mark_viewport_changed();
             }
+            
+            // Drop the guard immediately to prevent holding the lock
+            drop(core_map_guard);
         }
+        // Return the existing map even if we couldn't update the size
+        // This prevents flickering from unnecessary map recreation
         return core_map;
     }
 
+    // Create new map only if none exists
     let size = Point::new(rect.width() as f64, rect.height() as f64);
     let is_test = std::thread::current().name().unwrap_or("").contains("test") || cfg!(test);
     
@@ -194,6 +206,9 @@ fn get_or_create_core_map(
         CoreMap::new(map.center, map.zoom, size)
     };
     
+    // Configure the map with appropriate settings
+    // (bounds configuration can be added here if needed in the future)
+    
     let tile_layer = if is_test {
         TileLayer::for_testing("default_tiles".to_string(), "OpenStreetMap".to_string())
     } else {
@@ -201,6 +216,9 @@ fn get_or_create_core_map(
     };
     
     let _ = new_map.add_layer(Box::new(tile_layer));
+    
+    // Mark initial content as ready to prevent unnecessary updates
+    new_map.update_orchestrator_mut().mark_content_ready();
     
     let core_map_arc = Arc::new(Mutex::new(new_map));
     ctx.memory_mut(|mem| {
@@ -219,62 +237,94 @@ fn handle_map_input(
 ) {
     if response.dragged() {
         let drag_delta = response.drag_delta();
-        if drag_delta.length_sq() > 0.5 {
+        // Reduce threshold for more responsive dragging
+        if drag_delta.length_sq() > 0.1 {
             if let Ok(mut map_guard) = core_map.try_lock() {
-                let viewport = map_guard.viewport();
-                let current_center = viewport.center;
-                let current_zoom = viewport.zoom;
+                // Convert egui drag delta to Point for pan method
+                let pan_delta = Point::new(drag_delta.x as f64, drag_delta.y as f64);
                 
-                let map_size = 256.0 * 2_f64.powf(current_zoom);
-                let lng_per_pixel = 360.0 / map_size;
-                let lat_per_pixel = 180.0 / map_size * (1.0 / viewport.center.lat.to_radians().cos());
+                // Use the viewport's pan method which has proper bounds checking
+                // The pan method will handle bounds checking and return the actual delta applied
+                let actual_delta = map_guard.viewport_mut().pan(pan_delta);
                 
-                let lng_delta = -drag_delta.x as f64 * lng_per_pixel;
-                let lat_delta = drag_delta.y as f64 * lat_per_pixel;
+                // Mark the orchestrator to ensure proper rendering during drag
+                map_guard.update_orchestrator_mut().mark_viewport_changed();
+                map_guard.update_orchestrator_mut().force_update("drag_operation".to_string());
                 
-                let new_center = LatLng::new(
-                    (current_center.lat + lat_delta).clamp(-85.0511, 85.0511),
-                    current_center.lng + lng_delta,
-                );
-                
-                let _ = map_guard.set_view(new_center, current_zoom);
+                // Only mark as changed if the pan actually moved the map
+                if actual_delta.x.abs() > 0.01 || actual_delta.y.abs() > 0.01 {
+                    response.mark_changed();
+                }
             }
-            response.mark_changed();
+        }
+    }
+    
+    // Mouse wheel zooming can be added here if needed
+    // (requires proper egui scroll input handling)
+}
+
+fn render_map(ui: &mut Ui, rect: Rect, core_map: &Arc<Mutex<CoreMap>>) {
+    // Use a more robust locking mechanism to prevent rendering conflicts
+    match core_map.try_lock() {
+        Ok(mut map_guard) => {
+            let width = rect.width().max(1.0) as u32;
+            let height = rect.height().max(1.0) as u32;
+            
+            // Always try to render - the orchestrator was too restrictive
+            if let Ok(mut render_ctx) = RenderContext::new(width, height) {
+                // Perform the update and render
+                match map_guard.update_and_render(&mut render_ctx) {
+                    Ok(rendered) => {
+                        if rendered {
+                            let drawing_queue = render_ctx.get_drawing_queue();
+                            
+                            // Process drawing commands with error handling
+                            for cmd in drawing_queue.iter() {
+                                match cmd {
+                                    DrawCommand::Tile { data, bounds, .. } => {
+                                        render_tile(ui, rect, data, bounds);
+                                    }
+                                    DrawCommand::TileTextured { texture_id, bounds, .. } => {
+                                        render_textured_tile(ui, rect, *texture_id, bounds);
+                                    }
+                                    _ => {
+                                        // Handle other drawing commands if needed
+                                    }
+                                }
+                            }
+                        } else {
+                            // If no rendering occurred, show a simple background
+                            ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(240, 240, 240));
+                        }
+                    }
+                    Err(e) => {
+                        // Log error but don't crash - show fallback
+                        eprintln!("Map render error: {}", e);
+                        render_fallback_map(ui, rect, "Render error");
+                    }
+                }
+            } else {
+                render_fallback_map(ui, rect, "Context creation failed");
+            }
+        }
+        Err(_) => {
+            // If we can't lock the map, show a loading state instead of crashing
+            render_fallback_map(ui, rect, "Loading map...");
         }
     }
 }
 
-fn render_map(ui: &mut Ui, rect: Rect, core_map: &Arc<Mutex<CoreMap>>) {
-    if let Ok(mut map_guard) = core_map.try_lock() {
-        let width = rect.width().max(1.0) as u32;
-        let height = rect.height().max(1.0) as u32;
-        
-        if let Ok(mut render_ctx) = RenderContext::new(width, height) {
-            let _ = map_guard.update_and_render(&mut render_ctx);
-            let drawing_queue = render_ctx.get_drawing_queue();
 
-            for cmd in drawing_queue.iter() {
-                match cmd {
-                    DrawCommand::Tile { data, bounds, .. } => {
-                        render_tile(ui, rect, data, bounds);
-                    }
-                    DrawCommand::TileTextured { texture_id, bounds, .. } => {
-                        render_textured_tile(ui, rect, *texture_id, bounds);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    } else {
-        ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(230, 230, 230));
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "Loading map...",
-            egui::FontId::proportional(16.0),
-            Color32::from_gray(100),
-        );
-    }
+
+fn render_fallback_map(ui: &mut Ui, rect: Rect, message: &str) {
+    ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(230, 230, 230));
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        message,
+        egui::FontId::proportional(16.0),
+        Color32::from_gray(100),
+    );
 }
 
 fn render_tile(ui: &mut Ui, rect: Rect, data: &[u8], bounds: &(Point, Point)) {
@@ -282,29 +332,47 @@ fn render_tile(ui: &mut Ui, rect: Rect, data: &[u8], bounds: &(Point, Point)) {
         return;
     }
 
+    // Create a simple but stable texture key
+    let texture_key = format!("tile_{}_{}", 
+        (bounds.0.x as i32), 
+        (bounds.0.y as i32)
+    );
+    
+    // Try to load the image
     if let Ok(img) = image::load_from_memory(data) {
         let rgba_img = img.to_rgba8();
         let (width, height) = rgba_img.dimensions();
-        let color_image = ColorImage::from_rgba_unmultiplied(
-            [width as usize, height as usize],
-            &rgba_img.into_raw(),
-        );
+        
+        // Only proceed if we have valid dimensions
+        if width > 0 && height > 0 {
+            let color_image = ColorImage::from_rgba_unmultiplied(
+                [width as usize, height as usize],
+                &rgba_img.into_raw(),
+            );
+            
+            let texture = ui.ctx().load_texture(
+                texture_key, 
+                color_image, 
+                egui::TextureOptions::LINEAR
+            );
+            
+            let texture_id = texture.id();
+            
+            // Render the tile using the texture
+            let (min_point, max_point) = *bounds;
+            let tile_rect = Rect::from_two_pos(
+                egui::Pos2::new(rect.min.x + min_point.x as f32, rect.min.y + min_point.y as f32),
+                egui::Pos2::new(rect.min.x + max_point.x as f32, rect.min.y + max_point.y as f32),
+            );
 
-        let texture_key = format!("tile_{}_{}", bounds.0.x as i32, bounds.0.y as i32);
-        let texture = ui.ctx().load_texture(texture_key, color_image, egui::TextureOptions::default());
-
-        let (min_point, max_point) = *bounds;
-        let tile_rect = Rect::from_two_pos(
-            egui::Pos2::new(rect.min.x + min_point.x as f32, rect.min.y + min_point.y as f32),
-            egui::Pos2::new(rect.min.x + max_point.x as f32, rect.min.y + max_point.y as f32),
-        );
-
-        ui.painter().image(
-            texture.id(),
-            tile_rect,
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(1.0)),
-            Color32::WHITE,
-        );
+            // Render the tile
+            ui.painter().image(
+                texture_id,
+                tile_rect,
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(1.0)),
+                Color32::WHITE,
+            );
+        }
     }
 }
 

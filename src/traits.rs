@@ -26,28 +26,6 @@ pub trait CoordinateTransform {
     fn transform_bounds(&self, bounds: Bounds, zoom: f64) -> Bounds;
 }
 
-/// Trait for async background processing
-/// Standardizes the async patterns used across background tasks
-/// Unifies AsyncProcessor and BackgroundTask functionality
-pub trait AsyncProcessor: Send + Sync {
-    type Input: Send + 'static;
-    type Output: Send + 'static;
-    type Error: Send + 'static;
-    
-    /// Process data asynchronously
-    fn process(&self, input: Self::Input) -> Pin<Box<dyn Future<Output = std::result::Result<Self::Output, Self::Error>> + Send + '_>>;
-    
-    /// Get processing priority
-    fn priority(&self) -> crate::background::tasks::TaskPriority {
-        crate::background::tasks::TaskPriority::Normal
-    }
-    
-    /// Estimate processing duration
-    fn estimated_duration(&self, input: &Self::Input) -> std::time::Duration {
-        std::time::Duration::from_millis(100)
-    }
-}
-
 /// Trait for background tasks that can be executed asynchronously
 /// This is an alias for AsyncProcessor that matches the BackgroundTask interface
 pub trait BackgroundTask: Send + Sync {

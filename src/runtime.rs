@@ -6,6 +6,27 @@
 use std::future::Future;
 use std::pin::Pin;
 
+/// Trait for async background processing
+/// Standardizes the async patterns used across background tasks
+/// Unifies AsyncProcessor and BackgroundTask functionality
+pub trait AsyncProcessor: Send + Sync {
+    type Input: Send + 'static;
+    type Output: Send + 'static;
+    type Error: Send + 'static;
+    
+    /// Process data asynchronously
+    fn process(&self, input: Self::Input) -> Pin<Box<dyn Future<Output = std::result::Result<Self::Output, Self::Error>> + Send + '_>>;
+    
+    /// Get processing priority
+    fn priority(&self) -> crate::background::tasks::TaskPriority {
+        crate::background::tasks::TaskPriority::Normal
+    }
+    
+    /// Estimate processing duration
+    fn estimated_duration(&self, input: &Self::Input) -> std::time::Duration {
+        std::time::Duration::from_millis(100)
+    }
+}
 /// A trait for spawning async tasks (object-safe version)
 pub trait AsyncSpawner: Send + Sync + 'static {
     /// Spawn a future and return a handle to it
