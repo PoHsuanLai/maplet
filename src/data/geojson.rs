@@ -1,11 +1,11 @@
 use crate::core::bounds::Bounds;
 use crate::core::geo::{LatLng, LatLngBounds};
+use crate::prelude::Arc;
 use crate::prelude::HashMap;
 use crate::spatial::index::{SpatialIndex, SpatialItem};
 use crate::traits::GeometryOps;
 use crate::Result;
 use serde::{Deserialize, Serialize};
-use crate::prelude::Arc;
 use std::io::{BufRead, BufReader, Read};
 
 /// GeoJSON feature types
@@ -261,8 +261,8 @@ impl GeoJsonLayer {
                 for geom in geometries {
                     if let Some(geom_bounds) = Self::geometry_bounds(geom) {
                         if let Some(ref mut b) = bounds {
-                                                    b.extend_with_point(&geom_bounds.south_west);
-                        b.extend_with_point(&geom_bounds.north_east);
+                            b.extend_with_point(&geom_bounds.south_west);
+                            b.extend_with_point(&geom_bounds.north_east);
                         } else {
                             bounds = Some(geom_bounds);
                         }
@@ -272,8 +272,6 @@ impl GeoJsonLayer {
             }
         }
     }
-
-
 
     /// Create a GeoJsonLayer from a parsed GeoJson object
     pub fn from_geojson(data: GeoJson) -> Self {

@@ -1,7 +1,7 @@
 use crate::core::geo::{LatLng, TileCoord};
 use crate::core::viewport::Viewport;
+use crate::prelude::{Arc, HashSet, Mutex};
 use lru::LruCache;
-use crate::prelude::{HashSet, Arc, Mutex};
 use std::num::NonZeroUsize;
 
 /// Intelligent tile cache with multi-level prefetching strategy
@@ -42,10 +42,11 @@ impl TileCache {
                     viewport.center.lng - last.lng,
                     viewport.center.lat - last.lat,
                 );
-                
+
                 // Normalize movement vector
                 let magnitude = (movement.0 * movement.0 + movement.1 * movement.1).sqrt();
-                if magnitude > 0.0001 { // Only update if significant movement
+                if magnitude > 0.0001 {
+                    // Only update if significant movement
                     if let Ok(mut direction) = self.movement_direction.lock() {
                         *direction = Some((movement.0 / magnitude, movement.1 / magnitude));
                     }
@@ -96,15 +97,27 @@ impl TileCache {
     /// Get tiles visible in the current viewport
     fn get_visible_tiles(&self, viewport: &Viewport, zoom: u32) -> Vec<TileCoord> {
         let bounds = viewport.bounds();
-        
+
         // Debug: Log viewport bounds
-        println!("🔍 [TILES] Viewport bounds: N={:.4}, S={:.4}, E={:.4}, W={:.4} (zoom={})", 
-                 bounds.north_east.lat, bounds.south_west.lat, bounds.north_east.lng, bounds.south_west.lng, zoom);
-        
+        println!(
+            "🔍 [TILES] Viewport bounds: N={:.4}, S={:.4}, E={:.4}, W={:.4} (zoom={})",
+            bounds.north_east.lat,
+            bounds.south_west.lat,
+            bounds.north_east.lng,
+            bounds.south_west.lng,
+            zoom
+        );
+
         // Use unified projection for consistency
-        let nw_proj = viewport.project(&LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
-        let se_proj = viewport.project(&LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
-        
+        let nw_proj = viewport.project(
+            &LatLng::new(bounds.north_east.lat, bounds.south_west.lng),
+            Some(zoom as f64),
+        );
+        let se_proj = viewport.project(
+            &LatLng::new(bounds.south_west.lat, bounds.north_east.lng),
+            Some(zoom as f64),
+        );
+
         let tile_size = 256.0;
         let min_x = (nw_proj.x / tile_size).floor() as i32;
         let max_x = (se_proj.x / tile_size).ceil() as i32;
@@ -112,36 +125,51 @@ impl TileCache {
         let max_y = (se_proj.y / tile_size).ceil() as i32;
 
         let max_tile = (256.0 * 2_f64.powf(zoom as f64) / tile_size) as i32;
-        
+
         // Debug: Log tile range
-        println!("🔍 [TILES] Tile range: x={}-{}, y={}-{} (max_tile={})", 
-                 min_x, max_x, min_y, max_y, max_tile);
+        println!(
+            "🔍 [TILES] Tile range: x={}-{}, y={}-{} (max_tile={})",
+            min_x, max_x, min_y, max_y, max_tile
+        );
 
         let mut tiles = Vec::new();
         for x in min_x..=max_x {
             for y in min_y..=max_y {
                 if x >= 0 && y >= 0 && x < max_tile && y < max_tile {
-                    tiles.push(TileCoord { x: x as u32, y: y as u32, z: zoom as u8 });
+                    tiles.push(TileCoord {
+                        x: x as u32,
+                        y: y as u32,
+                        z: zoom as u8,
+                    });
                 }
             }
         }
-        
+
         // Debug: Log first few tiles
         if !tiles.is_empty() {
-            println!("🔍 [TILES] First 3 tiles: {:?}", tiles.iter().take(3).collect::<Vec<_>>());
+            println!(
+                "🔍 [TILES] First 3 tiles: {:?}",
+                tiles.iter().take(3).collect::<Vec<_>>()
+            );
         }
-        
+
         tiles
     }
 
     /// Get tiles with buffer around the visible area
     fn get_buffered_tiles(&self, viewport: &Viewport, zoom: u32, buffer: u32) -> Vec<TileCoord> {
         let bounds = viewport.bounds();
-        
+
         // Use unified projection for consistency
-        let nw_proj = viewport.project(&LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
-        let se_proj = viewport.project(&LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
-        
+        let nw_proj = viewport.project(
+            &LatLng::new(bounds.north_east.lat, bounds.south_west.lng),
+            Some(zoom as f64),
+        );
+        let se_proj = viewport.project(
+            &LatLng::new(bounds.south_west.lat, bounds.north_east.lng),
+            Some(zoom as f64),
+        );
+
         let tile_size = 256.0;
         let min_x = (nw_proj.x / tile_size).floor() as i32 - buffer as i32;
         let max_x = (se_proj.x / tile_size).ceil() as i32 + buffer as i32;
@@ -154,10 +182,10 @@ impl TileCache {
         for x in min_x..=max_x {
             for y in min_y..=max_y {
                 if x >= 0 && y >= 0 && x < max_tile && y < max_tile {
-                    tiles.push(TileCoord { 
-                        x: x as u32, 
-                        y: y as u32, 
-                        z: zoom as u8 
+                    tiles.push(TileCoord {
+                        x: x as u32,
+                        y: y as u32,
+                        z: zoom as u8,
                     });
                 }
             }
@@ -172,11 +200,17 @@ impl TileCache {
         }
 
         let bounds = viewport.bounds();
-        
+
         // Use unified projection for consistency
-        let nw_proj = viewport.project(&LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
-        let se_proj = viewport.project(&LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
-        
+        let nw_proj = viewport.project(
+            &LatLng::new(bounds.north_east.lat, bounds.south_west.lng),
+            Some(zoom as f64),
+        );
+        let se_proj = viewport.project(
+            &LatLng::new(bounds.south_west.lat, bounds.north_east.lng),
+            Some(zoom as f64),
+        );
+
         let tile_size = 256.0;
         let min_x = (nw_proj.x / tile_size).floor() as i32;
         let max_x = (se_proj.x / tile_size).ceil() as i32;
@@ -189,10 +223,10 @@ impl TileCache {
         for x in min_x..=max_x {
             for y in min_y..=max_y {
                 if x >= 0 && y >= 0 && x < max_tile && y < max_tile {
-                    tiles.push(TileCoord { 
-                        x: x as u32, 
-                        y: y as u32, 
-                        z: zoom as u8 
+                    tiles.push(TileCoord {
+                        x: x as u32,
+                        y: y as u32,
+                        z: zoom as u8,
                     });
                 }
             }
@@ -207,11 +241,17 @@ impl TileCache {
         }
 
         let bounds = viewport.bounds();
-        
+
         // Use unified projection for consistency
-        let nw_proj = viewport.project(&LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
-        let se_proj = viewport.project(&LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
-        
+        let nw_proj = viewport.project(
+            &LatLng::new(bounds.north_east.lat, bounds.south_west.lng),
+            Some(zoom as f64),
+        );
+        let se_proj = viewport.project(
+            &LatLng::new(bounds.south_west.lat, bounds.north_east.lng),
+            Some(zoom as f64),
+        );
+
         let tile_size = 256.0;
         let min_x = (nw_proj.x / tile_size).floor() as i32;
         let max_x = (se_proj.x / tile_size).ceil() as i32;
@@ -224,10 +264,10 @@ impl TileCache {
         for x in min_x..=max_x {
             for y in min_y..=max_y {
                 if x >= 0 && y >= 0 && x < max_tile && y < max_tile {
-                    tiles.push(TileCoord { 
-                        x: x as u32, 
-                        y: y as u32, 
-                        z: zoom as u8 
+                    tiles.push(TileCoord {
+                        x: x as u32,
+                        y: y as u32,
+                        z: zoom as u8,
                     });
                 }
             }
@@ -316,23 +356,23 @@ impl Default for TileCache {
 impl crate::traits::Cacheable for TileCache {
     type Key = crate::core::geo::TileCoord;
     type Value = Arc<Vec<u8>>;
-    
+
     fn get_cached(&self, key: &Self::Key) -> Option<Self::Value> {
         self.get(key)
     }
-    
+
     fn cache(&mut self, key: Self::Key, value: Self::Value) {
         self.put(key, value);
     }
-    
+
     fn invalidate(&mut self, key: &Self::Key) {
         self.remove(key);
     }
-    
+
     fn clear_cache(&mut self) {
         self.clear();
     }
-    
+
     fn cache_stats(&self) -> crate::traits::CacheStats {
         crate::traits::CacheStats {
             hits: 0, // TileCache doesn't track hits/misses currently

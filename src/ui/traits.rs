@@ -1,7 +1,4 @@
-use crate::{
-    core::geo::LatLng,
-    Result,
-};
+use crate::{core::geo::LatLng, Result};
 use egui::{Rect, Ui, Vec2};
 use std::any::Any;
 

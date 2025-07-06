@@ -1,4 +1,3 @@
-
 use crate::{
     core::{map::Map, viewport::Viewport},
     input::events::InputEvent,

@@ -1,6 +1,4 @@
-use crate::{
-    layers::base::{LayerProperties, LayerTrait, LayerType},
-};
+use crate::layers::base::{LayerProperties, LayerTrait, LayerType};
 
 pub struct CanvasLayer {
     properties: LayerProperties,

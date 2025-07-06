@@ -3,7 +3,7 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use super::source::TileSource;
 use crate::core::geo::TileCoord;
 use crate::core::viewport::Viewport;
-use crate::prelude::{HashSet, Ordering, BinaryHeap, VecDeque, Arc, Mutex, Duration, Instant};
+use crate::prelude::{Arc, BinaryHeap, Duration, HashSet, Instant, Mutex, Ordering, VecDeque};
 use crate::traits::GeometryOps;
 use crate::Result;
 use once_cell::sync::Lazy;
@@ -108,7 +108,7 @@ impl TileLoaderConfig {
             retry_delay: std::time::Duration::from_millis(50),
         }
     }
-    
+
     pub fn high_performance() -> Self {
         Self {
             max_concurrent: 256,
@@ -116,7 +116,7 @@ impl TileLoaderConfig {
             retry_delay: std::time::Duration::from_millis(10),
         }
     }
-    
+
     pub fn for_testing() -> Self {
         Self {
             max_concurrent: 4,
@@ -158,22 +158,29 @@ impl MovementPattern {
     pub fn update(&mut self, viewport: &Viewport) {
         let now = Instant::now();
 
-        // Clean old entries (older than 3 seconds for more aggressive prediction)
+        // OPTIMIZATION: Clean old entries more efficiently by draining from front
         let cutoff = now - Duration::from_secs(3);
-        self.recent_centers.retain(|(_, time)| *time > cutoff);
-        self.recent_zooms.retain(|(_, time)| *time > cutoff);
+
+        // Use efficient front-draining instead of retain for better performance
+        while let Some(&(_, time)) = self.recent_centers.front() {
+            if time <= cutoff {
+                self.recent_centers.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        while let Some(&(_, time)) = self.recent_zooms.front() {
+            if time <= cutoff {
+                self.recent_zooms.pop_front();
+            } else {
+                break;
+            }
+        }
 
         // Add new entries
         self.recent_centers.push_back((viewport.center, now));
         self.recent_zooms.push_back((viewport.zoom, now));
-
-        // Keep reasonable limits but allow more data for better prediction
-        if self.recent_centers.len() > 20 {
-            self.recent_centers.pop_front();
-        }
-        if self.recent_zooms.len() > 10 {
-            self.recent_zooms.pop_front();
-        }
 
         // Calculate velocity and prediction
         self.calculate_velocity();
@@ -186,27 +193,26 @@ impl MovementPattern {
             return;
         }
 
-        let recent: Vec<_> = self.recent_centers.iter().collect();
+        // OPTIMIZATION: Use window iterator for pairwise comparison
         let mut total_velocity = crate::core::geo::Point::new(0.0, 0.0);
         let mut count = 0;
 
-        for i in 1..recent.len() {
-            let (prev_pos, prev_time) = recent[i - 1];
-            let (curr_pos, curr_time) = recent[i];
-
+        let centers: Vec<_> = self.recent_centers.iter().collect();
+        for window in centers.windows(2) {
+            let (prev_pos, prev_time) = window[0];
+            let (curr_pos, curr_time) = window[1];
             let time_diff = curr_time.duration_since(*prev_time).as_secs_f64();
+
             if time_diff > 0.0 {
                 let lat_diff = curr_pos.lat - prev_pos.lat;
                 let lng_diff = curr_pos.lng - prev_pos.lng;
 
-                // Convert to approximate pixel movement
-                let pixel_velocity = crate::core::geo::Point::new(
-                    lng_diff / time_diff * 111320.0,
-                    lat_diff / time_diff * 111320.0,
-                );
+                // Convert to rough pixel velocity (this is approximate)
+                let velocity_x = lng_diff / time_diff;
+                let velocity_y = lat_diff / time_diff;
 
-                total_velocity.x += pixel_velocity.x;
-                total_velocity.y += pixel_velocity.y;
+                total_velocity.x += velocity_x;
+                total_velocity.y += velocity_y;
                 count += 1;
             }
         }
@@ -216,27 +222,26 @@ impl MovementPattern {
                 total_velocity.x / count as f64,
                 total_velocity.y / count as f64,
             ));
+        } else {
+            self.velocity = None;
         }
     }
 
     fn predict_next_position(&mut self) {
         if let Some(velocity) = self.velocity {
-            if let Some((last_center, _last_time)) = self.recent_centers.back() {
-                // Predict where the user will be in 1 second (more aggressive)
-                let prediction_time = 1.0;
-                
-                let predicted_lat = last_center.lat + (velocity.y * prediction_time) / 111320.0;
-                let predicted_lng = last_center.lng + (velocity.x * prediction_time) / 111320.0;
-                
-                self.predicted_center = Some(crate::core::geo::LatLng::new(predicted_lat, predicted_lng));
-                
-                // Calculate confidence based on movement consistency
-                let velocity_magnitude = (velocity.x.powi(2) + velocity.y.powi(2)).sqrt();
-                self.prediction_confidence = if velocity_magnitude > 100.0 {
-                    (0.8_f64).min(velocity_magnitude / 1000.0)
-                } else {
-                    0.3
-                };
+            if let Some(&(last_center, _last_time)) = self.recent_centers.back() {
+                // OPTIMIZATION: Use simple linear prediction with confidence based on data consistency
+                let prediction_time = 1.0; // Predict 1 second ahead
+
+                let predicted_lat = last_center.lat + velocity.y * prediction_time;
+                let predicted_lng = last_center.lng + velocity.x * prediction_time;
+
+                self.predicted_center =
+                    Some(crate::core::geo::LatLng::new(predicted_lat, predicted_lng));
+
+                // OPTIMIZATION: Calculate confidence based on velocity consistency
+                let velocity_magnitude = (velocity.x * velocity.x + velocity.y * velocity.y).sqrt();
+                self.prediction_confidence = (velocity_magnitude * 100.0).clamp(0.0, 1.0);
             }
         } else {
             self.predicted_center = None;
@@ -244,70 +249,66 @@ impl MovementPattern {
         }
     }
 
-    /// Get tiles to prefetch based on predicted movement - MUCH more aggressive
+    /// Get prefetch tiles with optimized tile generation
     pub fn get_prefetch_tiles(&self, current_viewport: &Viewport) -> Vec<TileCoord> {
-        let mut prefetch_tiles = Vec::new();
-        let current_zoom = current_viewport.zoom.round() as u32;
-
-        // 1. Current zoom level with large buffer
-        prefetch_tiles.extend(self.get_aggressive_buffer_tiles(current_viewport, current_zoom, 6));
-
-        // 2. Predicted position tiles if we have confidence
-        if let Some(predicted_center) = self.predicted_center {
-            if self.prediction_confidence > 0.2 {
-                let predicted_viewport = Viewport::new(
-                    predicted_center,
-                    current_viewport.zoom,
-                    current_viewport.size,
-                );
-                prefetch_tiles.extend(self.get_aggressive_buffer_tiles(&predicted_viewport, current_zoom, 4));
-            }
+        if self.prediction_confidence < 0.3 {
+            return Vec::new();
         }
 
-        // 3. Multiple zoom levels around current (like Leaflet but more aggressive)
-        for zoom_offset in -2..=2i32 {
-            let target_zoom = (current_zoom as i32 + zoom_offset).clamp(0, 18) as u32;
-            if target_zoom != current_zoom {
-                prefetch_tiles.extend(self.get_zoom_level_tiles(current_viewport, target_zoom, 3));
-            }
+        let Some(predicted_center) = self.predicted_center else {
+            return Vec::new();
+        };
+
+        // OPTIMIZATION: Pre-allocate result vector with estimated capacity
+        let mut tiles = Vec::with_capacity(50);
+
+        // Create a predicted viewport
+        let predicted_viewport = Viewport::new(
+            predicted_center,
+            current_viewport.zoom,
+            current_viewport.size,
+        );
+
+        // Get tiles for predicted viewport with a small buffer
+        let buffer = 1;
+        let zoom = current_viewport.zoom.floor() as u32;
+        let predicted_tiles = self.get_aggressive_buffer_tiles(&predicted_viewport, zoom, buffer);
+
+        // OPTIMIZATION: Extend instead of individual pushes
+        tiles.extend(predicted_tiles);
+
+        // OPTIMIZATION: Also prefetch at adjacent zoom levels for smooth transitions
+        if zoom > 0 {
+            let lower_zoom_tiles = self.get_zoom_level_tiles(&predicted_viewport, zoom - 1, buffer);
+            tiles.extend(lower_zoom_tiles);
         }
 
-        // 4. Movement direction extrapolation (very aggressive)
-        if let Some(velocity) = self.velocity {
-            let velocity_magnitude = (velocity.x.powi(2) + velocity.y.powi(2)).sqrt();
-            if velocity_magnitude > 50.0 {
-                // Prefetch in movement direction
-                for multiplier in 1..=3 {
-                    let time_ahead = multiplier as f64 * 0.5;
-                    let predicted_lat = current_viewport.center.lat + (velocity.y * time_ahead) / 111320.0;
-                    let predicted_lng = current_viewport.center.lng + (velocity.x * time_ahead) / 111320.0;
-                    
-                    let ahead_viewport = Viewport::new(
-                        crate::core::geo::LatLng::new(predicted_lat, predicted_lng),
-                        current_viewport.zoom,
-                        current_viewport.size,
-                    );
-                    prefetch_tiles.extend(self.get_aggressive_buffer_tiles(&ahead_viewport, current_zoom, 2));
-                }
-            }
+        if zoom < 18 {
+            let higher_zoom_tiles =
+                self.get_zoom_level_tiles(&predicted_viewport, zoom + 1, buffer);
+            tiles.extend(higher_zoom_tiles);
         }
 
-        // Remove duplicates and limit total count
-        let mut unique_tiles: HashSet<TileCoord> = HashSet::default();
-        for tile in prefetch_tiles {
-            unique_tiles.insert(tile);
-        }
-
-        unique_tiles.into_iter().take(2000).collect()
+        tiles
     }
 
-    /// Get tiles with aggressive buffer around viewport
-    fn get_aggressive_buffer_tiles(&self, viewport: &Viewport, zoom: u32, buffer: u32) -> Vec<TileCoord> {
+    fn get_aggressive_buffer_tiles(
+        &self,
+        viewport: &Viewport,
+        zoom: u32,
+        buffer: u32,
+    ) -> Vec<TileCoord> {
         let bounds = viewport.bounds();
-        
-        let nw_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
-        let se_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
-        
+
+        let nw_proj = viewport.project(
+            &crate::core::geo::LatLng::new(bounds.north_east.lat, bounds.south_west.lng),
+            Some(zoom as f64),
+        );
+        let se_proj = viewport.project(
+            &crate::core::geo::LatLng::new(bounds.south_west.lat, bounds.north_east.lng),
+            Some(zoom as f64),
+        );
+
         let tile_size = 256.0;
         let min_x = (nw_proj.x / tile_size).floor() as i32 - buffer as i32;
         let max_x = (se_proj.x / tile_size).ceil() as i32 + buffer as i32;
@@ -316,11 +317,19 @@ impl MovementPattern {
 
         let max_tile = (256.0 * 2_f64.powf(zoom as f64) / tile_size) as i32;
 
-        let mut tiles = Vec::new();
+        // OPTIMIZATION: Pre-calculate result size and allocate
+        let width = (max_x - min_x + 1).max(0) as usize;
+        let height = (max_y - min_y + 1).max(0) as usize;
+        let mut tiles = Vec::with_capacity(width * height);
+
         for x in min_x..=max_x {
             for y in min_y..=max_y {
                 if x >= 0 && y >= 0 && x < max_tile && y < max_tile {
-                    tiles.push(TileCoord { x: x as u32, y: y as u32, z: zoom as u8 });
+                    tiles.push(TileCoord {
+                        x: x as u32,
+                        y: y as u32,
+                        z: zoom as u8,
+                    });
                 }
             }
         }
@@ -356,10 +365,10 @@ pub enum NetworkCondition {
 impl Default for NetworkMetrics {
     fn default() -> Self {
         Self {
-            recent_download_times: VecDeque::with_capacity(20),
+            recent_download_times: VecDeque::with_capacity(100),
             average_download_time: Duration::from_millis(500),
             condition: NetworkCondition::Good,
-            recent_failures: VecDeque::with_capacity(10),
+            recent_failures: VecDeque::with_capacity(50),
         }
     }
 }
@@ -369,20 +378,17 @@ impl NetworkMetrics {
     pub fn record_success(&mut self, duration: Duration) {
         let now = Instant::now();
 
-        // Clean old entries (older than 30 seconds)
+        // OPTIMIZATION: Use efficient front-draining
         let cutoff = now - Duration::from_secs(30);
-        self.recent_download_times
-            .retain(|(_, time)| *time > cutoff);
-
-        // Add new entry
-        self.recent_download_times.push_back((duration, now));
-
-        // Keep reasonable limit
-        if self.recent_download_times.len() > 20 {
-            self.recent_download_times.pop_front();
+        while let Some(&(_, time)) = self.recent_download_times.front() {
+            if time <= cutoff {
+                self.recent_download_times.pop_front();
+            } else {
+                break;
+            }
         }
 
-        // Update average
+        self.recent_download_times.push_back((duration, now));
         self.update_average();
         self.update_condition();
     }
@@ -391,46 +397,53 @@ impl NetworkMetrics {
     pub fn record_failure(&mut self) {
         let now = Instant::now();
 
-        // Clean old failures (older than 30 seconds)
+        // OPTIMIZATION: Use efficient front-draining
         let cutoff = now - Duration::from_secs(30);
-        self.recent_failures.retain(|time| *time > cutoff);
-
-        // Add new failure
-        self.recent_failures.push_back(now);
-
-        // Keep reasonable limit
-        if self.recent_failures.len() > 10 {
-            self.recent_failures.pop_front();
+        while let Some(&time) = self.recent_failures.front() {
+            if time <= cutoff {
+                self.recent_failures.pop_front();
+            } else {
+                break;
+            }
         }
 
+        self.recent_failures.push_back(now);
         self.update_condition();
     }
 
     fn update_average(&mut self) {
-        if !self.recent_download_times.is_empty() {
-            let total: Duration = self.recent_download_times.iter().map(|(d, _)| *d).sum();
-            self.average_download_time = total / self.recent_download_times.len() as u32;
+        if self.recent_download_times.is_empty() {
+            return;
         }
+
+        // OPTIMIZATION: Use iterator instead of collecting
+        let total: Duration = self
+            .recent_download_times
+            .iter()
+            .map(|(duration, _)| *duration)
+            .sum();
+        self.average_download_time = total / self.recent_download_times.len() as u32;
     }
 
     fn update_condition(&mut self) {
-        let failure_rate = self.recent_failures.len() as f64 / 10.0; // Out of last 10 attempts
+        let failure_rate = self.recent_failures.len() as f64
+            / (self.recent_download_times.len() + self.recent_failures.len()).max(1) as f64;
 
-        if failure_rate > 0.3 || self.average_download_time > Duration::from_secs(2) {
+        if failure_rate > 0.5 || self.average_download_time > Duration::from_secs(2) {
             self.condition = NetworkCondition::Poor;
-        } else if self.average_download_time > Duration::from_millis(500) {
+        } else if failure_rate > 0.2 || self.average_download_time > Duration::from_millis(500) {
             self.condition = NetworkCondition::Fair;
         } else {
             self.condition = NetworkCondition::Good;
         }
     }
 
-    /// Get adjusted concurrency limit based on network condition
+    /// Get recommended concurrency limit based on network condition
     pub fn get_concurrency_limit(&self, base_limit: usize) -> usize {
         match self.condition {
             NetworkCondition::Good => base_limit,
-            NetworkCondition::Fair => (base_limit * 3 / 4).max(1),
-            NetworkCondition::Poor => (base_limit / 2).max(1),
+            NetworkCondition::Fair => base_limit * 2 / 3,
+            NetworkCondition::Poor => base_limit / 2,
         }
     }
 }
@@ -572,10 +585,10 @@ impl TileLoader {
                     url,
                     priority,
                     // For visible tiles, use reverse sequence to process in queue order
-                    sequence: if priority == TilePriority::Visible { 
+                    sequence: if priority == TilePriority::Visible {
                         sequence.saturating_sub(i as u64)
-                    } else { 
-                        sequence + i as u64 
+                    } else {
+                        sequence + i as u64
                     },
                 })
             })
@@ -584,11 +597,9 @@ impl TileLoader {
         let mut tasks = tasks?;
 
         // Sort by priority (visible tiles first) and then by sequence (like Leaflet's distance sorting)
-        tasks.sort_by(|a, b| {
-            match b.priority.cmp(&a.priority) {
-                std::cmp::Ordering::Equal => a.sequence.cmp(&b.sequence),
-                other => other,
-            }
+        tasks.sort_by(|a, b| match b.priority.cmp(&a.priority) {
+            std::cmp::Ordering::Equal => a.sequence.cmp(&b.sequence),
+            other => other,
         });
 
         // Send all tasks in priority order - visible tiles get processed first
@@ -652,23 +663,28 @@ impl TileLoader {
     }
 
     /// Enable background task manager for ultra-aggressive prefetching
-    pub fn with_background_task_manager(mut self, bg_task_manager: Arc<crate::background::BackgroundTaskManager>) -> Self {
+    pub fn with_background_task_manager(
+        mut self,
+        bg_task_manager: Arc<crate::background::BackgroundTaskManager>,
+    ) -> Self {
         self.bg_task_manager = Some(bg_task_manager);
         self
     }
 
     /// Create a tile loader with high-performance preset and background task manager
-    pub fn with_high_performance_preset(bg_task_manager: Arc<crate::background::BackgroundTaskManager>) -> Self {
+    pub fn with_high_performance_preset(
+        bg_task_manager: Arc<crate::background::BackgroundTaskManager>,
+    ) -> Self {
         let config = TileLoaderConfig::high_performance();
         let adaptive_config = AdaptiveConfig {
             enabled: true,
-            max_prefetch_distance: 8, // Very aggressive
+            max_prefetch_distance: 8,     // Very aggressive
             min_prefetch_confidence: 0.1, // Lower threshold
-            max_prefetch_tiles: 3000, // Much higher limit
+            max_prefetch_tiles: 3000,     // Much higher limit
             zoom_priority_adjustment: true,
             network_adaptive: true,
         };
-        
+
         Self::with_adaptive_config(config, adaptive_config)
             .with_background_task_manager(bg_task_manager)
     }
@@ -698,7 +714,7 @@ impl TileLoader {
         if let Some(adaptive_config) = &self.adaptive_config {
             let current_zoom = viewport.zoom.round() as u32;
             let max_tiles = adaptive_config.max_prefetch_tiles;
-            
+
             // Calculate prefetch tiles based on movement pattern
             let prefetch_coords = if let Ok(pattern) = self.movement_pattern.lock() {
                 pattern.get_prefetch_tiles(viewport)
@@ -743,7 +759,8 @@ impl TileLoader {
             coords.to_vec(),
             viewport.clone(),
             self.network_metrics.clone(),
-        ).with_priority(crate::background::TaskPriority::High);
+        )
+        .with_priority(crate::background::TaskPriority::High);
 
         // Submit the task with high priority
         if let Err(e) = bg_task_manager.submit_task(Arc::new(prefetch_task)) {
@@ -757,9 +774,15 @@ impl TileLoader {
         let bounds = viewport.bounds();
 
         // Use unified projection instead of duplicate Web Mercator calculations
-        let nw_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
-        let se_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
-        
+        let nw_proj = viewport.project(
+            &crate::core::geo::LatLng::new(bounds.north_east.lat, bounds.south_west.lng),
+            Some(zoom as f64),
+        );
+        let se_proj = viewport.project(
+            &crate::core::geo::LatLng::new(bounds.south_west.lat, bounds.north_east.lng),
+            Some(zoom as f64),
+        );
+
         let tile_size = 256.0;
         let padding = 1; // 1 tile padding around visible area
         let min_x = (nw_proj.x / tile_size).floor() as i32 - padding;
@@ -773,10 +796,10 @@ impl TileLoader {
         for x in min_x..=max_x {
             for y in min_y..=max_y {
                 if x >= 0 && y >= 0 && x < max_tile && y < max_tile {
-                    tiles.push(TileCoord { 
-                        x: x as u32, 
-                        y: y as u32, 
-                        z: zoom as u8 
+                    tiles.push(TileCoord {
+                        x: x as u32,
+                        y: y as u32,
+                        z: zoom as u8,
                     });
                 }
             }
@@ -784,7 +807,7 @@ impl TileLoader {
 
         // Add tiles for ±1 zoom levels
         let mut multi_zoom_tiles = tiles.clone();
-        
+
         if zoom > 0 {
             multi_zoom_tiles.extend(self.get_zoom_level_tiles(viewport, zoom - 1));
         }
@@ -800,9 +823,15 @@ impl TileLoader {
         let bounds = viewport.bounds();
 
         // Use unified projection instead of duplicate Web Mercator calculations
-        let nw_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.north_east.lat, bounds.south_west.lng), Some(zoom as f64));
-        let se_proj = viewport.project(&crate::core::geo::LatLng::new(bounds.south_west.lat, bounds.north_east.lng), Some(zoom as f64));
-        
+        let nw_proj = viewport.project(
+            &crate::core::geo::LatLng::new(bounds.north_east.lat, bounds.south_west.lng),
+            Some(zoom as f64),
+        );
+        let se_proj = viewport.project(
+            &crate::core::geo::LatLng::new(bounds.south_west.lat, bounds.north_east.lng),
+            Some(zoom as f64),
+        );
+
         let tile_size = 256.0;
         let min_x = (nw_proj.x / tile_size).floor() as u32;
         let max_x = (se_proj.x / tile_size).ceil() as u32;
@@ -812,10 +841,10 @@ impl TileLoader {
         let mut tiles = Vec::new();
         for x in min_x..=max_x {
             for y in min_y..=max_y {
-                tiles.push(TileCoord { 
-                    x, 
-                    y, 
-                    z: zoom as u8 
+                tiles.push(TileCoord {
+                    x,
+                    y,
+                    z: zoom as u8,
                 });
             }
         }
@@ -860,7 +889,7 @@ impl TileLoader {
         let pixel_x = coord.x as f64 * tile_size + tile_size / 2.0;
         let pixel_y = coord.y as f64 * tile_size + tile_size / 2.0;
         let pixel_point = crate::core::geo::Point::new(pixel_x, pixel_y);
-        
+
         // Use a default viewport for coordinate conversion (we only need the projection math)
         let temp_viewport = crate::core::viewport::Viewport::default();
         temp_viewport.unproject(&pixel_point, Some(coord.z as f64))
@@ -908,7 +937,7 @@ impl TileLoader {
             pending.clear();
         }
     }
-    
+
     /// Update the tile loader configuration (creates new loader with updated config)
     pub fn update_config(&self, new_config: TileLoaderConfig) -> Self {
         Self::new(new_config)
@@ -949,66 +978,79 @@ impl TilePrefetchTask {
 impl crate::background::BackgroundTask for TilePrefetchTask {
     fn execute(
         &self,
-    ) -> crate::prelude::Pin<Box<dyn crate::prelude::Future<Output = crate::Result<Box<dyn std::any::Any + Send>>> + Send + '_>> {
+    ) -> crate::prelude::Pin<
+        Box<
+            dyn crate::prelude::Future<Output = crate::Result<Box<dyn std::any::Any + Send>>>
+                + Send
+                + '_,
+        >,
+    > {
         Box::pin(async move {
             let coords = self.coords.clone();
             let viewport = self.viewport.clone();
             let network_metrics = self.network_metrics.clone();
 
             // Execute prefetch logic in background
-            let result = crate::background::tasks::AsyncExecutor::execute_blocking_boxed(move || {
-                // Simulate aggressive prefetching analysis
-                let mut prefetch_results = Vec::new();
-                
-                // Get network condition to adjust strategy
-                let network_condition = if let Ok(metrics) = network_metrics.lock() {
-                    metrics.condition.clone()
-                } else {
-                    NetworkCondition::Good
-                };
+            let result =
+                crate::background::tasks::AsyncExecutor::execute_blocking_boxed(move || {
+                    // Simulate aggressive prefetching analysis
+                    let mut prefetch_results = Vec::new();
 
-                // Adjust prefetch strategy based on network condition
-                let coords_len = coords.len();
-                let coords_to_prefetch = match network_condition {
-                    NetworkCondition::Good => coords, // All tiles
-                    NetworkCondition::Fair => coords.into_iter().take(coords_len * 2 / 3).collect(),
-                    NetworkCondition::Poor => coords.into_iter().take(coords_len / 2).collect(),
-                };
+                    // Get network condition to adjust strategy
+                    let network_condition = if let Ok(metrics) = network_metrics.lock() {
+                        metrics.condition.clone()
+                    } else {
+                        NetworkCondition::Good
+                    };
 
-                // Group tiles by zoom level for efficient prefetching
-                let mut zoom_groups = std::collections::HashMap::new();
-                for coord in coords_to_prefetch {
-                    zoom_groups.entry(coord.z).or_insert_with(Vec::new).push(coord);
-                }
+                    // Adjust prefetch strategy based on network condition
+                    let coords_len = coords.len();
+                    let coords_to_prefetch = match network_condition {
+                        NetworkCondition::Good => coords, // All tiles
+                        NetworkCondition::Fair => {
+                            coords.into_iter().take(coords_len * 2 / 3).collect()
+                        }
+                        NetworkCondition::Poor => coords.into_iter().take(coords_len / 2).collect(),
+                    };
 
-                // Prioritize current zoom level and adjacent levels
-                let current_zoom = viewport.zoom.round() as u8;
-                let mut priority_order = vec![current_zoom];
-                
-                // Add adjacent zoom levels
-                if current_zoom > 0 {
-                    priority_order.push(current_zoom - 1);
-                }
-                if current_zoom < 18 {
-                    priority_order.push(current_zoom + 1);
-                }
-
-                // Add other zoom levels
-                for zoom in zoom_groups.keys() {
-                    if !priority_order.contains(zoom) {
-                        priority_order.push(*zoom);
+                    // Group tiles by zoom level for efficient prefetching
+                    let mut zoom_groups = std::collections::HashMap::new();
+                    for coord in coords_to_prefetch {
+                        zoom_groups
+                            .entry(coord.z)
+                            .or_insert_with(Vec::new)
+                            .push(coord);
                     }
-                }
 
-                // Build prefetch recommendation
-                for zoom in priority_order {
-                    if let Some(tiles) = zoom_groups.get(&zoom) {
-                        prefetch_results.extend(tiles.iter().cloned());
+                    // Prioritize current zoom level and adjacent levels
+                    let current_zoom = viewport.zoom.round() as u8;
+                    let mut priority_order = vec![current_zoom];
+
+                    // Add adjacent zoom levels
+                    if current_zoom > 0 {
+                        priority_order.push(current_zoom - 1);
                     }
-                }
+                    if current_zoom < 18 {
+                        priority_order.push(current_zoom + 1);
+                    }
 
-                Ok(prefetch_results)
-            }).await?;
+                    // Add other zoom levels
+                    for zoom in zoom_groups.keys() {
+                        if !priority_order.contains(zoom) {
+                            priority_order.push(*zoom);
+                        }
+                    }
+
+                    // Build prefetch recommendation
+                    for zoom in priority_order {
+                        if let Some(tiles) = zoom_groups.get(&zoom) {
+                            prefetch_results.extend(tiles.iter().cloned());
+                        }
+                    }
+
+                    Ok(prefetch_results)
+                })
+                .await?;
 
             Ok(Box::new(result) as Box<dyn std::any::Any + Send>)
         })

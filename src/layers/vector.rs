@@ -4,7 +4,7 @@ use crate::{
         viewport::Viewport,
     },
     layers::base::{LayerProperties, LayerTrait, LayerType},
-    prelude::HashMap,
+    prelude::{HashMap, HashSet},
     rendering::context::RenderContext,
     spatial::index::{SpatialIndex, SpatialItem},
     Result,
@@ -14,7 +14,6 @@ use crate::{
 use egui::Color32;
 
 use serde::{Deserialize, Serialize};
-
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SerializableColor {
     pub r: u8,
@@ -172,7 +171,6 @@ pub enum VectorFeature {
 impl VectorFeature {
     /// Get the bounding box of this feature
     pub fn bounds(&self) -> LatLngBounds {
-        
         match self {
             VectorFeature::Point { position, .. } => LatLngBounds::new(*position, *position),
             VectorFeature::LineString { points, .. } => {
@@ -304,14 +302,10 @@ pub struct VectorLayer {
     properties: LayerProperties,
     /// All features in this layer
     features: HashMap<String, VectorFeatureData>,
-    /// Layer-wide style overrides
-    default_point_style: PointStyle,
-    default_line_style: LineStyle,
-    default_polygon_style: PolygonStyle,
     /// Whether features can be selected
     selectable: bool,
     /// Currently selected feature IDs
-    selected_features: Vec<String>,
+    selected_features: HashSet<String>,
     /// Proper spatial index for efficient querying
     spatial_index: SpatialIndex<VectorFeatureData>,
 }
@@ -324,11 +318,8 @@ impl VectorLayer {
         Self {
             properties,
             features: HashMap::default(),
-            default_point_style: PointStyle::default(),
-            default_line_style: LineStyle::default(),
-            default_polygon_style: PolygonStyle::default(),
             selectable: true,
-            selected_features: Vec::new(),
+            selected_features: HashSet::default(),
             spatial_index: SpatialIndex::new(),
         }
     }
@@ -343,7 +334,7 @@ impl VectorLayer {
             bounds.north_east.lng,
             bounds.north_east.lat,
         );
-        
+
         let spatial_item = SpatialItem::new(feature.id.clone(), spatial_bounds, feature.clone());
         self.spatial_index.insert(spatial_item)?;
         self.features.insert(feature.id.clone(), feature);
@@ -373,7 +364,10 @@ impl VectorLayer {
     }
 
     /// Get features that intersect with the given bounds
-    pub fn features_in_bounds(&self, bounds: &crate::core::geo::LatLngBounds) -> Vec<&VectorFeatureData> {
+    pub fn features_in_bounds(
+        &self,
+        bounds: &crate::core::geo::LatLngBounds,
+    ) -> Vec<&VectorFeatureData> {
         // Convert LatLngBounds to Bounds for spatial query
         let query_bounds = crate::core::bounds::Bounds::from_coords(
             bounds.south_west.lng,
@@ -381,7 +375,7 @@ impl VectorLayer {
             bounds.north_east.lng,
             bounds.north_east.lat,
         );
-        
+
         self.spatial_index
             .query(&query_bounds)
             .into_iter()
@@ -400,37 +394,27 @@ impl VectorLayer {
     }
 
     /// Select a feature by ID
-    pub fn select_feature(&mut self, id: &str, multi_select: bool) {
-        if !multi_select {
-            // Clear previous selections
-            for feature_id in &self.selected_features {
-                if let Some(feature) = self.features.get_mut(feature_id) {
-                    feature.selected = false;
-                }
-            }
-            self.selected_features.clear();
-        }
-
+    pub fn select_feature(&mut self, id: &str) -> Result<()> {
         if let Some(feature) = self.features.get_mut(id) {
             feature.selected = true;
-            if !self.selected_features.contains(&id.to_string()) {
-                self.selected_features.push(id.to_string());
-            }
+            self.selected_features.insert(id.to_string());
         }
+        Ok(())
     }
 
     /// Deselect a feature by ID
-    pub fn deselect_feature(&mut self, id: &str) {
+    pub fn deselect_feature(&mut self, id: &str) -> Result<()> {
         if let Some(feature) = self.features.get_mut(id) {
             feature.selected = false;
+            self.selected_features.remove(id);
         }
-        self.selected_features.retain(|fid| fid != id);
+        Ok(())
     }
 
     /// Clear all selections
     pub fn clear_selection(&mut self) {
-        for feature_id in &self.selected_features {
-            if let Some(feature) = self.features.get_mut(feature_id) {
+        for id in &self.selected_features {
+            if let Some(feature) = self.features.get_mut(id) {
                 feature.selected = false;
             }
         }
@@ -438,23 +422,8 @@ impl VectorLayer {
     }
 
     /// Get selected feature IDs
-    pub fn selected_features(&self) -> &[String] {
-        &self.selected_features
-    }
-
-    /// Set default point style
-    pub fn set_default_point_style(&mut self, style: PointStyle) {
-        self.default_point_style = style;
-    }
-
-    /// Set default line style
-    pub fn set_default_line_style(&mut self, style: LineStyle) {
-        self.default_line_style = style;
-    }
-
-    /// Set default polygon style
-    pub fn set_default_polygon_style(&mut self, style: PolygonStyle) {
-        self.default_polygon_style = style;
+    pub fn get_selected_features(&self) -> Vec<String> {
+        self.selected_features.iter().cloned().collect()
     }
 
     /// Get feature count
@@ -646,7 +615,6 @@ impl VectorLayer {
     }
 }
 
-
 impl LayerTrait for VectorLayer {
     crate::impl_layer_trait!(VectorLayer, properties);
 
@@ -692,7 +660,7 @@ mod tests {
             None,
         );
 
-        let _ =layer.add_feature(point_feature);
+        let _ = layer.add_feature(point_feature);
         assert_eq!(layer.feature_count(), 1);
 
         let feature = layer.get_feature("point1");
@@ -713,13 +681,13 @@ mod tests {
         );
 
         let _ = layer.add_feature(point_feature);
-        layer.select_feature("point1", false);
+        layer.select_feature("point1");
 
-        assert_eq!(layer.selected_features().len(), 1);
-        assert_eq!(layer.selected_features()[0], "point1");
+        assert_eq!(layer.get_selected_features().len(), 1);
+        assert_eq!(layer.get_selected_features()[0], "point1");
 
         layer.clear_selection();
-        assert_eq!(layer.selected_features().len(), 0);
+        assert_eq!(layer.get_selected_features().len(), 0);
     }
 
     #[test]

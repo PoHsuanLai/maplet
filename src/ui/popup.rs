@@ -1,11 +1,11 @@
 use crate::prelude::HashMap;
+use crate::prelude::{Duration, Instant};
 use crate::{
     core::{geo::LatLng, viewport::Viewport},
     ui::traits::Renderable,
     Result,
 };
 use egui::{Color32, FontId, Rect, Response, Ui, Vec2};
-use crate::prelude::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PopupPosition {

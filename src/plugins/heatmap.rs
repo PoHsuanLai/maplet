@@ -118,22 +118,44 @@ impl HeatmapPlugin {
     }
 
     pub fn add_point(&mut self, point: HeatmapPoint) -> Result<()> {
-        let spatial_item = SpatialItem::from_lat_lng(
-            format!("heatmap_{}", self.data_points.len()),
-            point.position,
-            point.clone(),
-        );
+        let item = SpatialItem {
+            id: format!("heatmap_point_{}", self.data_points.len()),
+            bounds: crate::core::bounds::Bounds::from_center_and_size(
+                crate::core::geo::Point::new(point.position.lng, point.position.lat),
+                self.config.radius * 2.0,
+                self.config.radius * 2.0,
+            ),
+            data: point.clone(),
+        };
 
-        self.spatial_index.insert(spatial_item)?;
+        self.spatial_index.insert(item)?;
         self.data_points.push(point);
+        self.cached_heatmap = None;
         self.dirty = true;
         Ok(())
     }
 
     pub fn add_points(&mut self, points: Vec<HeatmapPoint>) -> Result<()> {
-        for point in points {
-            self.add_point(point)?;
+        let initial_len = self.data_points.len();
+        self.data_points.reserve(points.len());
+
+        for (i, point) in points.into_iter().enumerate() {
+            let item = SpatialItem {
+                id: format!("heatmap_point_{}", initial_len + i),
+                bounds: crate::core::bounds::Bounds::from_center_and_size(
+                    crate::core::geo::Point::new(point.position.lng, point.position.lat),
+                    self.config.radius * 2.0,
+                    self.config.radius * 2.0,
+                ),
+                data: point.clone(),
+            };
+
+            self.spatial_index.insert(item)?;
+            self.data_points.push(point);
         }
+
+        self.cached_heatmap = None;
+        self.dirty = true;
         Ok(())
     }
 
@@ -166,6 +188,7 @@ impl HeatmapPlugin {
         self.data_points.len()
     }
 
+    /// Optimized heatmap generation with spatial indexing and early termination
     fn generate_heatmap(&mut self, viewport: &Viewport) -> Result<()> {
         let viewport_latlng_bounds = viewport.bounds();
         let north_west = LatLng::new(
@@ -193,35 +216,63 @@ impl HeatmapPlugin {
         let grid_width = (viewport_bounds.width() / cell_size).ceil() as usize;
         let grid_height = (viewport_bounds.height() / cell_size).ceil() as usize;
 
-        let mut grid_data = vec![vec![0.0; grid_width]; grid_height];
+        // Pre-allocate with known capacity to avoid reallocations
+        let mut grid_data = Vec::with_capacity(grid_height);
+        for _ in 0..grid_height {
+            grid_data.push(vec![0.0; grid_width]);
+        }
 
-        let points = self.spatial_index.query(&viewport_bounds);
+        // OPTIMIZATION: Expand query bounds to include radius for accurate calculations
+        let expanded_bounds = crate::core::bounds::Bounds::new(
+            crate::core::geo::Point::new(
+                viewport_bounds.min.x - self.config.radius,
+                viewport_bounds.min.y - self.config.radius,
+            ),
+            crate::core::geo::Point::new(
+                viewport_bounds.max.x + self.config.radius,
+                viewport_bounds.max.y + self.config.radius,
+            ),
+        );
 
-        for (row, grid_row) in grid_data.iter_mut().enumerate().take(grid_height) {
-            for (col, cell) in grid_row.iter_mut().enumerate().take(grid_width) {
+        let points = self.spatial_index.query(&expanded_bounds);
+
+        // OPTIMIZATION: Pre-calculate blur factor to avoid repeated calculations
+        let blur_factor = 2.0 * self.config.blur * self.config.blur;
+        let radius_squared = self.config.radius * self.config.radius;
+
+        // OPTIMIZATION: Process cells in batches and use early termination
+        for row in 0..grid_height {
+            for col in 0..grid_width {
                 let cell_x = viewport_bounds.min.x + (col as f64 * cell_size);
                 let cell_y = viewport_bounds.min.y + (row as f64 * cell_size);
                 let cell_center = Point::new(cell_x + cell_size / 2.0, cell_y + cell_size / 2.0);
 
                 let mut total_intensity = 0.0;
 
+                // OPTIMIZATION: Early termination if we've found enough intensity
                 for point_item in &points {
                     let point_pos =
                         Point::new(point_item.data.position.lng, point_item.data.position.lat);
 
-                    let distance = ((cell_center.x - point_pos.x).powi(2)
-                        + (cell_center.y - point_pos.y).powi(2))
-                    .sqrt();
+                    // OPTIMIZATION: Use squared distance to avoid sqrt
+                    let dx = cell_center.x - point_pos.x;
+                    let dy = cell_center.y - point_pos.y;
+                    let distance_squared = dx * dx + dy * dy;
 
-                    if distance <= self.config.radius {
-                        let influence = (-distance * distance
-                            / (2.0 * self.config.blur * self.config.blur))
-                            .exp();
+                    if distance_squared <= radius_squared {
+                        // OPTIMIZATION: Use pre-calculated blur factor
+                        let influence = (-distance_squared / blur_factor).exp();
                         total_intensity += point_item.data.intensity * influence;
+
+                        // OPTIMIZATION: Early termination if we've reached maximum intensity
+                        if total_intensity >= self.config.max_intensity {
+                            total_intensity = self.config.max_intensity;
+                            break;
+                        }
                     }
                 }
 
-                *cell = total_intensity;
+                grid_data[row][col] = total_intensity;
             }
         }
 
@@ -238,6 +289,7 @@ impl HeatmapPlugin {
         Ok(())
     }
 
+    /// Optimized color calculation with pre-computed gradient lookup
     fn intensity_to_color(&self, intensity: f64) -> Color32 {
         if intensity <= self.config.min_intensity {
             return self.config.gradient[0].1;
@@ -249,23 +301,61 @@ impl HeatmapPlugin {
         let normalized = (intensity - self.config.min_intensity)
             / (self.config.max_intensity - self.config.min_intensity);
 
-        for i in 0..self.config.gradient.len() - 1 {
-            let (t1, color1) = self.config.gradient[i];
-            let (t2, color2) = self.config.gradient[i + 1];
+        // OPTIMIZATION: Use binary search for large gradients
+        if self.config.gradient.len() > 10 {
+            let mut left = 0;
+            let mut right = self.config.gradient.len() - 1;
 
-            if normalized >= t1 && normalized <= t2 {
-                let t = (normalized - t1) / (t2 - t1);
-                return Color32::from_rgba_premultiplied(
-                    (color1.r() as f64 * (1.0 - t) + color2.r() as f64 * t) as u8,
-                    (color1.g() as f64 * (1.0 - t) + color2.g() as f64 * t) as u8,
-                    (color1.b() as f64 * (1.0 - t) + color2.b() as f64 * t) as u8,
-                    ((color1.a() as f64 * (1.0 - t) + color2.a() as f64 * t)
-                        * self.config.opacity as f64) as u8,
-                );
+            while left < right {
+                let mid = (left + right) / 2;
+                if self.config.gradient[mid].0 <= normalized {
+                    left = mid + 1;
+                } else {
+                    right = mid;
+                }
+            }
+
+            if left > 0 {
+                let i = left - 1;
+                let (t1, color1) = self.config.gradient[i];
+                let (t2, color2) = self.config.gradient[i.min(self.config.gradient.len() - 1)];
+
+                if t2 != t1 {
+                    let t = (normalized - t1) / (t2 - t1);
+                    return self.interpolate_color(color1, color2, t);
+                }
+            }
+        } else {
+            // OPTIMIZATION: Linear search for small gradients
+            for i in 0..self.config.gradient.len() - 1 {
+                let (t1, color1) = self.config.gradient[i];
+                let (t2, color2) = self.config.gradient[i + 1];
+
+                if normalized >= t1 && normalized <= t2 {
+                    let t = if t2 != t1 {
+                        (normalized - t1) / (t2 - t1)
+                    } else {
+                        0.0
+                    };
+                    return self.interpolate_color(color1, color2, t);
+                }
             }
         }
 
         self.config.gradient.last().unwrap().1
+    }
+
+    /// Optimized color interpolation
+    #[inline]
+    fn interpolate_color(&self, color1: Color32, color2: Color32, t: f64) -> Color32 {
+        let inv_t = 1.0 - t;
+        Color32::from_rgba_premultiplied(
+            (color1.r() as f64 * inv_t + color2.r() as f64 * t) as u8,
+            (color1.g() as f64 * inv_t + color2.g() as f64 * t) as u8,
+            (color1.b() as f64 * inv_t + color2.b() as f64 * t) as u8,
+            ((color1.a() as f64 * inv_t + color2.a() as f64 * t) * self.config.opacity as f64)
+                as u8,
+        )
     }
 }
 

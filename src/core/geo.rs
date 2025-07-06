@@ -54,8 +54,6 @@ impl LatLng {
     pub fn clamp_lat(lat: f64) -> f64 {
         lat.clamp(-MAX_LATITUDE, MAX_LATITUDE)
     }
-
-
 }
 
 impl Default for LatLng {
@@ -76,8 +74,6 @@ impl Point {
         Self { x, y }
     }
 
-
-
     pub fn floor(&self) -> Point {
         Point::new(self.x.floor(), self.y.floor())
     }
@@ -94,21 +90,21 @@ impl PointMath for Point {
     fn add(&self, other: &Self) -> Self {
         Point::new(self.x + other.x, self.y + other.y)
     }
-    
+
     fn subtract(&self, other: &Self) -> Self {
         Point::new(self.x - other.x, self.y - other.y)
     }
-    
+
     fn multiply(&self, scalar: f64) -> Self {
         Point::new(self.x * scalar, self.y * scalar)
     }
-    
+
     fn distance_to(&self, other: &Self) -> f64 {
         let dx = self.x - other.x;
         let dy = self.y - other.y;
         (dx * dx + dy * dy).sqrt()
     }
-    
+
     fn scale(&self, factor: f64) -> Self {
         Point::new(self.x * factor, self.y * factor)
     }
@@ -173,8 +169,6 @@ impl LatLngBounds {
         Some(bounds)
     }
 
-
-
     /// Gets the span of the bounds
     pub fn span(&self) -> LatLng {
         LatLng::new(
@@ -202,37 +196,38 @@ impl GeometryOps<LatLng> for LatLngBounds {
             && point.lng >= self.south_west.lng
             && point.lng <= self.north_east.lng
     }
-    
+
     fn intersects_bounds(&self, other: &Self) -> bool {
         !(other.north_east.lat < self.south_west.lat
             || other.south_west.lat > self.north_east.lat
             || other.north_east.lng < self.south_west.lng
             || other.south_west.lng > self.north_east.lng)
     }
-    
+
     fn extend_with_point(&mut self, point: &LatLng) {
         self.south_west.lat = self.south_west.lat.min(point.lat);
         self.south_west.lng = self.south_west.lng.min(point.lng);
         self.north_east.lat = self.north_east.lat.max(point.lat);
         self.north_east.lng = self.north_east.lng.max(point.lng);
     }
-    
+
     fn center(&self) -> LatLng {
         LatLng::new(
             (self.south_west.lat + self.north_east.lat) / 2.0,
             (self.south_west.lng + self.north_east.lng) / 2.0,
         )
     }
-    
+
     fn is_valid(&self) -> bool {
         self.south_west.lat <= self.north_east.lat && self.south_west.lng <= self.north_east.lng
     }
-    
+
     fn area(&self) -> f64 {
         if !self.is_valid() {
             0.0
         } else {
-            (self.north_east.lat - self.south_west.lat) * (self.north_east.lng - self.south_west.lng)
+            (self.north_east.lat - self.south_west.lat)
+                * (self.north_east.lng - self.south_west.lng)
         }
     }
 }

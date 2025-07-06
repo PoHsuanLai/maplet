@@ -40,7 +40,8 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BuildSpatialIndexTask<
                     index.insert(item)?;
                 }
                 Ok(index)
-            }).await
+            })
+            .await
         })
     }
 
@@ -98,7 +99,8 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for SpatialQueryTask<T> {
                 // Clone the items to own them
                 let owned_items: Vec<SpatialItem<T>> = items.into_iter().cloned().collect();
                 Ok(owned_items)
-            }).await
+            })
+            .await
         })
     }
 
@@ -158,7 +160,8 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for RadiusQueryTask<T> {
                 // Clone the items to own them
                 let owned_items: Vec<SpatialItem<T>> = items.into_iter().cloned().collect();
                 Ok(owned_items)
-            }).await
+            })
+            .await
         })
     }
 
@@ -196,11 +199,7 @@ pub struct BatchUpdateIndexTask<T: Clone + Send + Sync + 'static> {
 }
 
 impl<T: Clone + Send + Sync + 'static> BatchUpdateIndexTask<T> {
-    pub fn new(
-        task_id: String,
-        index: SpatialIndex<T>,
-        updates: Vec<IndexUpdate<T>>,
-    ) -> Self {
+    pub fn new(task_id: String, index: SpatialIndex<T>, updates: Vec<IndexUpdate<T>>) -> Self {
         Self {
             task_id,
             index,
@@ -240,7 +239,8 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for BatchUpdateIndexTask<T
                     }
                 }
                 Ok(index)
-            }).await
+            })
+            .await
         })
     }
 

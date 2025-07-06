@@ -1,14 +1,14 @@
 //! Macros to reduce boilerplate in layer implementations
-//! 
+//!
 //! This module provides macros that generate common LayerTrait implementations
 //! to avoid code duplication across different layer types.
 
 /// Macro to implement the standard LayerTrait boilerplate methods
-/// 
+///
 /// This generates implementations for:
 /// - id(), name(), layer_type()
 /// - z_index(), set_z_index()
-/// - opacity(), set_opacity() 
+/// - opacity(), set_opacity()
 /// - visible(), set_visible()
 /// - as_any(), as_any_mut()
 ///
@@ -92,7 +92,7 @@ macro_rules! impl_layer_constructor {
 }
 
 /// Macro to implement default options serialization for layers with just properties
-#[macro_export] 
+#[macro_export]
 macro_rules! impl_default_options_serialization {
     ($properties_field:ident) => {
         fn options(&self) -> serde_json::Value {

@@ -2,13 +2,13 @@
 
 use crate::{
     core::geo::{LatLng, Point, TileCoord},
-    traits::{RetryLogic, should_retry_with_backoff},
-    prelude::{HashMap, Arc},
+    prelude::{Arc, HashMap},
+    traits::{should_retry_with_backoff, RetryLogic},
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TileLayerOptions {
-    pub tile_size: u32, 
+    pub tile_size: u32,
     pub min_zoom: u8,
     pub max_zoom: u8,
     pub attribution: Option<String>,
@@ -22,6 +22,17 @@ pub struct TileLayerOptions {
     pub detect_retina: bool,
     pub reference_system: String,
     pub bounds: Option<crate::core::geo::LatLngBounds>,
+    /// Load new tiles only when panning ends (like Leaflet's updateWhenIdle)
+    /// `false` by default on desktop to display tiles during panning (like Leaflet)
+    /// `true` on mobile to avoid too many requests
+    pub update_when_idle: bool,
+    /// Update tiles during zoom animations (like Leaflet's updateWhenZooming)
+    /// `true` by default for smooth zoom experience
+    pub update_when_zooming: bool,
+    /// Tiles will not update more than once every updateInterval milliseconds when panning
+    pub update_interval: u32,
+    /// Target zoom level for animations (internal use)
+    pub target_zoom: Option<f64>,
 }
 
 impl Default for TileLayerOptions {
@@ -41,6 +52,10 @@ impl Default for TileLayerOptions {
             detect_retina: false,
             reference_system: "EPSG:3857".to_string(),
             bounds: None,
+            update_when_idle: false,   // Like Leaflet's default for desktop
+            update_when_zooming: true, // Like Leaflet's default
+            update_interval: 200,
+            target_zoom: None,
         }
     }
 }
@@ -54,7 +69,7 @@ pub struct TileLevel {
     pub origin: Point,
     pub scale: f64,
     pub translation: Point,
-    
+
     /// CSS-style animation support (like Leaflet's transform animations)
     pub animating: bool,
     /// Transform matrix for smooth zoom animations
@@ -65,7 +80,7 @@ pub struct TileLevel {
     pub animation_duration: std::time::Duration,
     /// Target transform for ongoing animations
     pub target_transform: Option<(f64, Point)>, // (scale, translation)
-    
+
     /// Leaflet-style level management
     /// Z-index for layering during animations (like Leaflet's CSS z-index)
     pub z_index: i32,
@@ -110,11 +125,11 @@ impl TileLevel {
         // Calculate scale factor based on zoom difference
         let zoom_diff = viewport_zoom - self.zoom as f64;
         self.scale = 2_f64.powf(zoom_diff);
-        
+
         // Calculate translation for centering
         let level_center = viewport.project(&center, Some(self.zoom as f64));
         let viewport_center_px = viewport.project(&viewport_center, Some(self.zoom as f64));
-        
+
         self.translation = Point::new(
             (viewport_center_px.x - level_center.x) * self.scale,
             (viewport_center_px.y - level_center.y) * self.scale,
@@ -122,7 +137,7 @@ impl TileLevel {
 
         // Update transform matrix for CSS-style rendering
         self.update_transform_matrix();
-        
+
         // Mark as animating if scale is significantly different from 1.0
         self.animating = (self.scale - 1.0).abs() > 0.01;
     }
@@ -133,17 +148,22 @@ impl TileLevel {
         // where the transform is: [a c e; b d f; 0 0 1]
         // This represents: translate(e, f) scale(a, d) with rotation support via b,c
         self.transform_matrix = Some([
-            self.scale,      // a: x-scale
-            0.0,             // b: y-skew 
-            0.0,             // c: x-skew
-            self.scale,      // d: y-scale
+            self.scale,         // a: x-scale
+            0.0,                // b: y-skew
+            0.0,                // c: x-skew
+            self.scale,         // d: y-scale
             self.translation.x, // e: x-translation
             self.translation.y, // f: y-translation
         ]);
     }
 
     /// Start a smooth animation to a target transform
-    pub fn animate_to_transform(&mut self, target_scale: f64, target_translation: Point, duration: std::time::Duration) {
+    pub fn animate_to_transform(
+        &mut self,
+        target_scale: f64,
+        target_translation: Point,
+        duration: std::time::Duration,
+    ) {
         self.target_transform = Some((target_scale, target_translation));
         self.animation_start = Some(std::time::Instant::now());
         self.animation_duration = duration;
@@ -152,9 +172,9 @@ impl TileLevel {
 
     /// Update animation state and interpolate transforms
     pub fn update_animation(&mut self) -> bool {
-        if let (Some(start_time), Some((target_scale, target_translation))) = 
-            (self.animation_start, self.target_transform) {
-            
+        if let (Some(start_time), Some((target_scale, target_translation))) =
+            (self.animation_start, self.target_transform)
+        {
             let elapsed = start_time.elapsed();
             if elapsed >= self.animation_duration {
                 // Animation complete
@@ -166,21 +186,29 @@ impl TileLevel {
                 self.update_transform_matrix();
                 return false;
             }
-            
+
             // Use unified easing function (ease-out cubic)
             let t = elapsed.as_secs_f64() / self.animation_duration.as_secs_f64();
             let eased_t = crate::layers::animation::ease_out_cubic(t);
-            
+
             // Use unified interpolation functions
             let current_scale = self.scale;
             let current_translation = self.translation;
-            
+
             self.scale = crate::layers::animation::lerp(current_scale, target_scale, eased_t);
             self.translation = Point::new(
-                crate::layers::animation::lerp(current_translation.x, target_translation.x, eased_t),
-                crate::layers::animation::lerp(current_translation.y, target_translation.y, eased_t),
+                crate::layers::animation::lerp(
+                    current_translation.x,
+                    target_translation.x,
+                    eased_t,
+                ),
+                crate::layers::animation::lerp(
+                    current_translation.y,
+                    target_translation.y,
+                    eased_t,
+                ),
             );
-            
+
             self.update_transform_matrix();
             return true;
         }
@@ -193,14 +221,14 @@ impl TileLevel {
         if !self.animating || self.transform_matrix.is_none() {
             return bounds;
         }
-        
+
         let matrix = self.transform_matrix.unwrap();
         let (min, max) = bounds;
-        
+
         // Apply 2D transformation matrix to corner points
         let transformed_min = self.apply_transform_matrix(&matrix, min);
         let transformed_max = self.apply_transform_matrix(&matrix, max);
-        
+
         // Calculate actual bounds from transformed corners
         let all_corners = [
             transformed_min,
@@ -208,17 +236,29 @@ impl TileLevel {
             self.apply_transform_matrix(&matrix, Point::new(min.x, max.y)),
             self.apply_transform_matrix(&matrix, Point::new(max.x, min.y)),
         ];
-        
+
         let final_min = Point::new(
-            all_corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min),
-            all_corners.iter().map(|p| p.y).fold(f64::INFINITY, f64::min),
+            all_corners
+                .iter()
+                .map(|p| p.x)
+                .fold(f64::INFINITY, f64::min),
+            all_corners
+                .iter()
+                .map(|p| p.y)
+                .fold(f64::INFINITY, f64::min),
         );
-        
+
         let final_max = Point::new(
-            all_corners.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max),
-            all_corners.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max),
+            all_corners
+                .iter()
+                .map(|p| p.x)
+                .fold(f64::NEG_INFINITY, f64::max),
+            all_corners
+                .iter()
+                .map(|p| p.y)
+                .fold(f64::NEG_INFINITY, f64::max),
         );
-        
+
         (final_min, final_max)
     }
 
@@ -247,44 +287,42 @@ impl TileLevel {
         self.target_transform = None;
         self.transform_matrix = None;
     }
-    
-    /// Leaflet-style level management methods
-    
+
     /// Set the z-index for this level (higher values render on top)
     pub fn set_z_index(&mut self, z_index: i32) {
         self.z_index = z_index;
     }
-    
+
     /// Mark this level as active (currently being rendered)
     pub fn set_active(&mut self, active: bool) {
         self.active = active;
     }
-    
+
     /// Set whether this level should be retained during zoom transitions
     pub fn set_retain(&mut self, retain: bool) {
         self.retain = retain;
     }
-    
+
     /// Set the opacity for fade transitions
     pub fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity.clamp(0.0, 1.0);
     }
-    
+
     /// Check if this level should be retained
     pub fn should_retain(&self) -> bool {
         self.retain
     }
-    
+
     /// Check if this level is active
     pub fn is_active(&self) -> bool {
         self.active
     }
-    
+
     /// Get the current opacity
     pub fn get_opacity(&self) -> f32 {
         self.opacity
     }
-    
+
     /// Get the z-index
     pub fn get_z_index(&self) -> i32 {
         self.z_index
@@ -358,8 +396,6 @@ impl TileState {
         self.last_retry_time = Some(std::time::Instant::now());
     }
 
-
-
     pub fn set_parent_data(&mut self, parent_data: Option<Arc<Vec<u8>>>) {
         self.show_parent = parent_data.is_some() && self.data.is_none();
         self.parent_data = parent_data;
@@ -367,7 +403,12 @@ impl TileState {
 }
 
 impl RetryLogic for TileState {
-    fn should_retry(&self, max_retries: u32, retry_delay_ms: u64, exponential_backoff: bool) -> bool {
+    fn should_retry(
+        &self,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        exponential_backoff: bool,
+    ) -> bool {
         should_retry_with_backoff(
             self.retry_count,
             self.last_retry_time,

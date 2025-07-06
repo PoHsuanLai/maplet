@@ -2,15 +2,13 @@ use crate::{
     core::{bounds::Bounds, geo::Point, map::Map, viewport::Viewport},
     input::events::InputEvent,
     plugins::base::PluginTrait,
+    prelude::{HashMap, HashSet},
+    rendering::context::RenderContext,
     Result,
 };
 
 #[cfg(feature = "egui")]
 use egui::Color32;
-
-use crate::rendering::context::RenderContext;
-
-use crate::prelude::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DrawTool {
@@ -218,7 +216,7 @@ pub struct DrawPlugin {
     state: DrawState,
     current_tool: DrawTool,
     shapes: HashMap<String, DrawnShape>,
-    selected_shapes: Vec<String>,
+    selected_shapes: HashSet<String>,
     active: bool,
     shape_counter: usize,
 }
@@ -230,7 +228,7 @@ impl DrawPlugin {
             state: DrawState::Idle,
             current_tool: DrawTool::Freehand,
             shapes: HashMap::default(),
-            selected_shapes: Vec::new(),
+            selected_shapes: HashSet::default(),
             active: false,
             shape_counter: 0,
         }
@@ -242,7 +240,7 @@ impl DrawPlugin {
             state: DrawState::Idle,
             current_tool: DrawTool::Freehand,
             shapes: HashMap::default(),
-            selected_shapes: Vec::new(),
+            selected_shapes: HashSet::default(),
             active: false,
             shape_counter: 0,
         }
@@ -341,7 +339,7 @@ impl DrawPlugin {
         }
 
         self.shapes.remove(shape_id);
-        self.selected_shapes.retain(|id| id != shape_id);
+        self.selected_shapes.remove(shape_id);
         Ok(())
     }
 
@@ -357,29 +355,18 @@ impl DrawPlugin {
 
     /// Select a shape
     pub fn select_shape(&mut self, shape_id: &str) -> Result<()> {
-        if let Some(shape) = self.shapes.get_mut(shape_id) {
-            shape.selected = true;
-            if !self.selected_shapes.contains(&shape_id.to_string()) {
-                self.selected_shapes.push(shape_id.to_string());
-            }
-        }
+        self.selected_shapes.insert(shape_id.to_string());
         Ok(())
     }
 
     /// Deselect a shape
     pub fn deselect_shape(&mut self, shape_id: &str) -> Result<()> {
-        if let Some(shape) = self.shapes.get_mut(shape_id) {
-            shape.selected = false;
-        }
-        self.selected_shapes.retain(|id| id != shape_id);
+        self.selected_shapes.remove(shape_id);
         Ok(())
     }
 
     /// Clear all selections
     pub fn clear_selection(&mut self) {
-        for shape in self.shapes.values_mut() {
-            shape.selected = false;
-        }
         self.selected_shapes.clear();
     }
 

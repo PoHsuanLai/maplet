@@ -4,8 +4,6 @@
 //! to easily configure different aspects of the map rendering engine through
 //! presets or custom configurations.
 
-use crate::layers::animation::EasingType;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum MapPerformanceProfile {
     Balanced,
@@ -35,18 +33,7 @@ impl MapPerformanceProfile {
                     show_parent_tiles: true,
                     preload_zoom_tiles: true,
                 },
-                animation: InteractionAnimationConfig {
-                    enable_transitions: true,
-                    pan_easing: EasingType::EaseOut,
-                    zoom_easing: EasingType::EaseOut,
-                    max_zoom_step_per_frame: 0.15,
-                    zoom_animation_threshold: 0.05,
-                    zoom_duration_ms: 350,
-                    pan_duration_ms: 300,
-                    zoom_to_cursor: true,
-                    use_transform_animations: true,
-                    smooth_wheel_zoom: true,
-                },
+
                 rendering: GpuRenderingConfig {
                     msaa_samples: 4,
                     texture_filter: TextureFilterMode::Linear,
@@ -72,18 +59,7 @@ impl MapPerformanceProfile {
                     show_parent_tiles: false,
                     preload_zoom_tiles: false,
                 },
-                animation: InteractionAnimationConfig {
-                    enable_transitions: false,
-                    pan_easing: EasingType::Linear,
-                    zoom_easing: EasingType::Linear,
-                    max_zoom_step_per_frame: 0.5,
-                    zoom_animation_threshold: 0.05,
-                    zoom_duration_ms: 350,
-                    pan_duration_ms: 200,
-                    zoom_to_cursor: true,
-                    use_transform_animations: true,
-                    smooth_wheel_zoom: true,
-                },
+
                 rendering: GpuRenderingConfig {
                     msaa_samples: 0,
                     texture_filter: TextureFilterMode::Nearest,
@@ -108,18 +84,6 @@ impl MapPerformanceProfile {
                     error_tile_url: None,
                     show_parent_tiles: true,
                     preload_zoom_tiles: true,
-                },
-                animation: InteractionAnimationConfig {
-                    enable_transitions: true,
-                    pan_easing: EasingType::Smooth,
-                    zoom_easing: EasingType::Smooth,
-                    max_zoom_step_per_frame: 0.03,
-                    zoom_animation_threshold: 0.05,
-                    zoom_duration_ms: 350,
-                    pan_duration_ms: 400,
-                    zoom_to_cursor: true,
-                    use_transform_animations: true,
-                    smooth_wheel_zoom: true,
                 },
                 rendering: GpuRenderingConfig {
                     msaa_samples: 8,
@@ -161,7 +125,7 @@ impl UnifiedMapConfig {
             ui_controls: crate::ui::controls::ControlConfig::minimal(),
         }
     }
-    
+
     /// High performance configuration for desktop applications
     pub fn high_performance() -> Self {
         Self {
@@ -172,7 +136,7 @@ impl UnifiedMapConfig {
             ui_controls: crate::ui::controls::ControlConfig::full_controls(),
         }
     }
-    
+
     /// Testing configuration with reduced resources and timeouts
     pub fn for_testing() -> Self {
         Self {
@@ -183,7 +147,7 @@ impl UnifiedMapConfig {
             ui_controls: crate::ui::controls::ControlConfig::minimal(),
         }
     }
-    
+
     /// Mobile-friendly configuration
     pub fn mobile_optimized() -> Self {
         Self {
@@ -200,7 +164,6 @@ impl UnifiedMapConfig {
 pub struct MapPerformanceOptions {
     pub framerate: FrameTimingConfig,
     pub tile_loader: TileLoadingConfig,
-    pub animation: InteractionAnimationConfig,
     pub rendering: GpuRenderingConfig,
 }
 
@@ -262,63 +225,6 @@ impl Default for TileLoadingConfig {
             error_tile_url: None,
             show_parent_tiles: true,
             preload_zoom_tiles: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct InteractionAnimationConfig {
-    pub enable_transitions: bool,
-    pub pan_easing: EasingType,
-    pub zoom_easing: EasingType,
-    pub max_zoom_step_per_frame: f32,
-    pub zoom_animation_threshold: f32,
-    pub zoom_duration_ms: u64,
-    pub pan_duration_ms: u64,
-    pub zoom_to_cursor: bool,
-    pub use_transform_animations: bool,
-    pub smooth_wheel_zoom: bool,
-}
-
-impl InteractionAnimationConfig {
-    pub fn default_pan_duration_ms(&self) -> u64 {
-        if self.enable_transitions {
-            match self.pan_easing {
-                EasingType::Linear => 200,
-                EasingType::EaseInOut => 400,
-                _ => 300,
-            }
-        } else {
-            0
-        }
-    }
-
-    pub fn default_zoom_duration_ms(&self) -> u64 {
-        if self.enable_transitions {
-            match self.zoom_easing {
-                EasingType::Linear => 150,
-                EasingType::EaseInOut => 350,
-                _ => 250,
-            }
-        } else {
-            0
-        }
-    }
-}
-
-impl Default for InteractionAnimationConfig {
-    fn default() -> Self {
-        Self {
-            enable_transitions: true,
-            pan_easing: EasingType::EaseOut,
-            zoom_easing: EasingType::EaseOut,
-            max_zoom_step_per_frame: 0.15,
-            zoom_animation_threshold: 0.05,
-            zoom_duration_ms: 350,
-            pan_duration_ms: 300,
-            zoom_to_cursor: true,
-            use_transform_animations: true,
-            smooth_wheel_zoom: true,
         }
     }
 }
@@ -400,12 +306,10 @@ mod tests {
         // Balanced should have reasonable defaults
         assert_eq!(balanced.framerate.target_fps, Some(60));
         assert_eq!(balanced.tile_loader.cache_size, 1024);
-        assert!(balanced.animation.enable_transitions);
 
         // Low quality should prioritize performance
         assert_eq!(low_quality.framerate.target_fps, Some(30));
         assert!(low_quality.tile_loader.cache_size < balanced.tile_loader.cache_size);
-        assert!(!low_quality.animation.enable_transitions);
 
         // High quality should prioritize visual fidelity
         assert_eq!(high_quality.framerate.target_fps, Some(120)); // Zed-style 120fps targeting
@@ -422,7 +326,7 @@ mod tests {
         };
 
         assert_eq!(config.target_frame_duration_ms(), Some(16));
-        
+
         // Timing decisions are now handled by UpdateOrchestrator, not FrameTimingConfig
     }
 

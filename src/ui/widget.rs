@@ -1,13 +1,13 @@
+use crate::prelude::{Arc, Mutex};
 use crate::{
     core::{
         geo::{LatLng, Point},
         map::Map as CoreMap,
     },
     layers::tile::TileLayer,
-    rendering::context::{RenderContext, DrawCommand},
+    rendering::context::{DrawCommand, RenderContext},
 };
-use egui::{Color32, Rect, Response, Sense, Ui, Vec2, Widget, ColorImage};
-use crate::prelude::{Arc, Mutex};
+use egui::{Color32, ColorImage, Rect, Response, Sense, Ui, Vec2, Widget};
 
 #[derive(Clone)]
 pub struct Map {
@@ -138,7 +138,7 @@ impl Widget for Map {
 
         let map_id = get_map_id(&self);
         let core_map = get_or_create_core_map(ui.ctx(), &self, rect, map_id);
-        
+
         if self.interactive {
             handle_map_input(ui, &mut response, &core_map, &self, rect);
         }
@@ -178,22 +178,43 @@ fn get_or_create_core_map(
         // Update size and center if needed
         if let Ok(mut core_map_guard) = core_map.try_lock() {
             let current_size = core_map_guard.viewport().size;
-            let current_center = core_map_guard.viewport().center;
             let current_zoom = core_map_guard.viewport().zoom;
-            
+
             let new_size = Point::new(rect.width() as f64, rect.height() as f64);
-            
+
+            // Handle center synchronization carefully:
+            // - Set center on first creation (when sizes are very different)
+            // - Allow programmatic center changes by checking if widget center changed from last time
+            // - But preserve user drag-based center changes
+            let is_initial_setup = (current_size.x - new_size.x).abs() > 100.0
+                || (current_size.y - new_size.y).abs() > 100.0;
+
+            // Track the widget's previous center to detect when it changes programmatically
+            let widget_center_key = map_id.with("widget_center");
+            let previous_widget_center =
+                ctx.memory(|mem| mem.data.get_temp::<LatLng>(widget_center_key));
+
+            let widget_center_changed = if let Some(prev_center) = previous_widget_center {
+                (prev_center.lat - map.center.lat).abs() > 0.01
+                    || (prev_center.lng - map.center.lng).abs() > 0.01
+            } else {
+                true // First time, so consider it changed
+            };
+
+            if is_initial_setup || widget_center_changed {
+                // Only update center if this looks like initial setup or the widget's center changed programmatically
+                let _ = core_map_guard.set_view(map.center, current_zoom);
+                // Store the new widget center for next time
+                ctx.memory_mut(|mem| mem.data.insert_temp(widget_center_key, map.center));
+            }
+
             // Only update size if there's a significant change
-            if (current_size.x - new_size.x).abs() > 2.0 || (current_size.y - new_size.y).abs() > 2.0 {
+            if (current_size.x - new_size.x).abs() > 2.0
+                || (current_size.y - new_size.y).abs() > 2.0
+            {
                 core_map_guard.viewport_mut().set_size(new_size);
             }
-            
-            // Update center if needed
-            if (current_center.lat - map.center.lat).abs() > 0.00001 
-                || (current_center.lng - map.center.lng).abs() > 0.00001 {
-                let _ = core_map_guard.set_view(map.center, current_zoom);
-            }
-            
+
             drop(core_map_guard);
         }
         return core_map;
@@ -201,12 +222,13 @@ fn get_or_create_core_map(
 
     // Create new map
     let size = Point::new(rect.width() as f64, rect.height() as f64);
-    let mut new_map = if std::thread::current().name().unwrap_or("").contains("test") || cfg!(test) {
+    let mut new_map = if std::thread::current().name().unwrap_or("").contains("test") || cfg!(test)
+    {
         CoreMap::for_testing(map.center, map.zoom, size)
     } else {
         CoreMap::new(map.center, map.zoom, size)
     };
-    
+
     // Add default tile layer so the map has something to render
     let is_test = std::thread::current().name().unwrap_or("").contains("test") || cfg!(test);
     let tile_layer = if is_test {
@@ -214,16 +236,16 @@ fn get_or_create_core_map(
     } else {
         TileLayer::openstreetmap("default_tiles".to_string(), "OpenStreetMap".to_string())
     };
-    
+
     let _ = new_map.add_layer(Box::new(tile_layer));
-    
+
     let core_map = Arc::new(Mutex::new(new_map));
-    
+
     // Store in memory
     ctx.memory_mut(|mem| {
         mem.data.insert_temp(map_id, core_map.clone());
     });
-    
+
     core_map
 }
 
@@ -236,15 +258,16 @@ fn handle_map_input(
 ) {
     if let Ok(mut map_guard) = core_map.try_lock() {
         let mut all_events = Vec::new();
-        
+
         // Get events from response (clicks, drags, etc.)
         let response_events = crate::input::events::EventConversion::from_egui_response(response);
         all_events.extend(response_events);
-        
+
         // Get events from input state (scroll wheel, etc.)
-        let input_events = crate::input::events::EventConversion::from_egui_input_state(ui.ctx(), rect);
+        let input_events =
+            crate::input::events::EventConversion::from_egui_input_state(ui.ctx(), rect);
         all_events.extend(input_events);
-        
+
         // Process all events through unified handler
         if !all_events.is_empty() {
             for event in all_events {
@@ -264,16 +287,26 @@ fn render_map(ui: &mut Ui, rect: Rect, core_map: &Arc<Mutex<CoreMap>>) {
         Ok(mut map_guard) => {
             let width = rect.width().max(1.0) as u32;
             let height = rect.height().max(1.0) as u32;
-            
+
             // Get the current viewport transform for animations
-            let viewport_transform = map_guard.viewport().get_transform().clone();
+            let viewport_transform = *map_guard.viewport().get_transform();
             let has_active_transform = map_guard.viewport().has_active_transform();
-            
-            // Request continuous repaints during animations (like Leaflet)
-            if has_active_transform {
+
+            // Check if we're currently dragging (like Leaflet's continuous repaint during drag)
+            let is_dragging = map_guard.viewport().is_dragging();
+
+            // Request continuous repaints during animations AND dragging (like Leaflet)
+            // More frequent repaints during drag for smoother tile loading
+            if has_active_transform || is_dragging {
                 ui.ctx().request_repaint();
+                // During drag, request immediate repaint for smoother experience
+                if is_dragging {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(16));
+                    // ~60fps
+                }
             }
-            
+
             // Always try to render - the orchestrator was too restrictive
             if let Ok(mut render_ctx) = RenderContext::new(width, height) {
                 // Perform the update and render
@@ -281,22 +314,40 @@ fn render_map(ui: &mut Ui, rect: Rect, core_map: &Arc<Mutex<CoreMap>>) {
                     Ok(rendered) => {
                         if rendered {
                             let drawing_queue = render_ctx.get_drawing_queue();
-                            
+
                             // Process drawing commands with error handling
                             // Apply transforms during zoom animations (like Leaflet)
                             for cmd in drawing_queue.iter() {
                                 match cmd {
                                     DrawCommand::Tile { data, bounds, .. } => {
                                         if has_active_transform {
-                                            render_tile_with_transform(ui, rect, data, bounds, &viewport_transform);
+                                            render_tile_with_transform(
+                                                ui,
+                                                rect,
+                                                data,
+                                                bounds,
+                                                &viewport_transform,
+                                            );
                                         } else {
+                                            // CRITICAL FIX: Don't apply drag transform since tiles are already positioned correctly
+                                            // The tile layer now calculates positions using effective center during drag
                                             render_tile(ui, rect, data, bounds);
                                         }
                                     }
-                                    DrawCommand::TileTextured { texture_id, bounds, .. } => {
+                                    DrawCommand::TileTextured {
+                                        texture_id, bounds, ..
+                                    } => {
                                         if has_active_transform {
-                                            render_textured_tile_with_transform(ui, rect, *texture_id, bounds, &viewport_transform);
+                                            render_textured_tile_with_transform(
+                                                ui,
+                                                rect,
+                                                *texture_id,
+                                                bounds,
+                                                &viewport_transform,
+                                            );
                                         } else {
+                                            // CRITICAL FIX: Don't apply drag transform since tiles are already positioned correctly
+                                            // The tile layer now calculates positions using effective center during drag
                                             render_textured_tile(ui, rect, *texture_id, bounds);
                                         }
                                     }
@@ -307,7 +358,8 @@ fn render_map(ui: &mut Ui, rect: Rect, core_map: &Arc<Mutex<CoreMap>>) {
                             }
                         } else {
                             // If no rendering occurred, show a simple background
-                            ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(240, 240, 240));
+                            ui.painter()
+                                .rect_filled(rect, 0.0, Color32::from_rgb(240, 240, 240));
                         }
                     }
                     Err(e) => {
@@ -328,7 +380,8 @@ fn render_map(ui: &mut Ui, rect: Rect, core_map: &Arc<Mutex<CoreMap>>) {
 }
 
 fn render_fallback_map(ui: &mut Ui, rect: Rect, message: &str) {
-    ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(230, 230, 230));
+    ui.painter()
+        .rect_filled(rect, 0.0, Color32::from_rgb(230, 230, 230));
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -340,48 +393,56 @@ fn render_fallback_map(ui: &mut Ui, rect: Rect, message: &str) {
 
 fn render_tile(ui: &mut Ui, rect: Rect, data: &[u8], bounds: &(Point, Point)) {
     if data.is_empty() {
-         // Render a placeholder for empty tiles
+        // Render a placeholder for empty tiles
         let (min_point, max_point) = *bounds;
         let tile_rect = Rect::from_two_pos(
-            egui::Pos2::new(rect.min.x + min_point.x as f32, rect.min.y + min_point.y as f32),
-            egui::Pos2::new(rect.min.x + max_point.x as f32, rect.min.y + max_point.y as f32),
+            egui::Pos2::new(
+                rect.min.x + min_point.x as f32,
+                rect.min.y + min_point.y as f32,
+            ),
+            egui::Pos2::new(
+                rect.min.x + max_point.x as f32,
+                rect.min.y + max_point.y as f32,
+            ),
         );
-        ui.painter().rect_filled(tile_rect, 0.0, Color32::from_rgb(200, 200, 200));
+        ui.painter()
+            .rect_filled(tile_rect, 0.0, Color32::from_rgb(200, 200, 200));
         return;
     }
 
     // Create a simple but stable texture key
-    let texture_key = format!("tile_{}_{}", 
-        (bounds.0.x as i32), 
-        (bounds.0.y as i32)
-    );
-    
+    let texture_key = format!("tile_{}_{}", (bounds.0.x as i32), (bounds.0.y as i32));
+
     // Try to load the image
     match image::load_from_memory(data) {
         Ok(img) => {
             let rgba_img = img.to_rgba8();
             let (width, height) = rgba_img.dimensions();
-            
+
             // Only proceed if we have valid dimensions
             if width > 0 && height > 0 {
                 let color_image = ColorImage::from_rgba_unmultiplied(
                     [width as usize, height as usize],
                     &rgba_img.into_raw(),
                 );
-                
-                let texture = ui.ctx().load_texture(
-                    texture_key, 
-                    color_image, 
-                    egui::TextureOptions::LINEAR
-                );
-                
+
+                let texture =
+                    ui.ctx()
+                        .load_texture(texture_key, color_image, egui::TextureOptions::LINEAR);
+
                 let texture_id = texture.id();
-                
+
                 // Render the tile using the texture
                 let (min_point, max_point) = *bounds;
                 let tile_rect = Rect::from_two_pos(
-                    egui::Pos2::new(rect.min.x + min_point.x as f32, rect.min.y + min_point.y as f32),
-                    egui::Pos2::new(rect.min.x + max_point.x as f32, rect.min.y + max_point.y as f32),
+                    egui::Pos2::new(
+                        rect.min.x + min_point.x as f32,
+                        rect.min.y + min_point.y as f32,
+                    ),
+                    egui::Pos2::new(
+                        rect.min.x + max_point.x as f32,
+                        rect.min.y + max_point.y as f32,
+                    ),
                 );
 
                 // Render the tile
@@ -391,26 +452,30 @@ fn render_tile(ui: &mut Ui, rect: Rect, data: &[u8], bounds: &(Point, Point)) {
                     egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(1.0)),
                     Color32::WHITE,
                 );
-                
-                // Debug: Log successful tile rendering
-                if data.len() < 1000 {
-                    println!("🖼️ [RENDER] Rendered small tile: {} bytes, {}x{}", data.len(), width, height);
-                }
             } else {
                 println!("❌ [RENDER] Invalid tile dimensions: {}x{}", width, height);
                 render_error_tile(ui, rect, bounds, "Invalid dimensions");
             }
         }
         Err(e) => {
-            println!("❌ [RENDER] Failed to load tile image: {} ({} bytes), error: {}", 
-                     texture_key, data.len(), e);
-            
+            println!(
+                "❌ [RENDER] Failed to load tile image: {} ({} bytes), error: {}",
+                texture_key,
+                data.len(),
+                e
+            );
+
             // Debug: Show first few bytes of data
-            if data.len() > 0 {
-                let preview = data.iter().take(16).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+            if !data.is_empty() {
+                let preview = data
+                    .iter()
+                    .take(16)
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 println!("📋 [DEBUG] Tile data preview: {} (first 16 bytes)", preview);
             }
-            
+
             render_error_tile(ui, rect, bounds, "Image decode error");
         }
     }
@@ -419,14 +484,22 @@ fn render_tile(ui: &mut Ui, rect: Rect, data: &[u8], bounds: &(Point, Point)) {
 fn render_error_tile(ui: &mut Ui, rect: Rect, bounds: &(Point, Point), error_msg: &str) {
     let (min_point, max_point) = *bounds;
     let tile_rect = Rect::from_two_pos(
-        egui::Pos2::new(rect.min.x + min_point.x as f32, rect.min.y + min_point.y as f32),
-        egui::Pos2::new(rect.min.x + max_point.x as f32, rect.min.y + max_point.y as f32),
+        egui::Pos2::new(
+            rect.min.x + min_point.x as f32,
+            rect.min.y + min_point.y as f32,
+        ),
+        egui::Pos2::new(
+            rect.min.x + max_point.x as f32,
+            rect.min.y + max_point.y as f32,
+        ),
     );
-    
+
     // Render a distinctive error tile
-    ui.painter().rect_filled(tile_rect, 0.0, Color32::from_rgb(255, 200, 200));
-    ui.painter().rect_stroke(tile_rect, 0.0, egui::Stroke::new(1.0, Color32::RED));
-    
+    ui.painter()
+        .rect_filled(tile_rect, 0.0, Color32::from_rgb(255, 200, 200));
+    ui.painter()
+        .rect_stroke(tile_rect, 0.0, egui::Stroke::new(1.0, Color32::RED));
+
     // Add error text if tile is large enough
     if tile_rect.width() > 50.0 && tile_rect.height() > 50.0 {
         ui.painter().text(
@@ -439,42 +512,44 @@ fn render_error_tile(ui: &mut Ui, rect: Rect, bounds: &(Point, Point), error_msg
     }
 }
 
-fn render_tile_with_transform(ui: &mut Ui, rect: Rect, data: &[u8], bounds: &(Point, Point), transform: &crate::core::viewport::Transform) {
+fn render_tile_with_transform(
+    ui: &mut Ui,
+    rect: Rect,
+    data: &[u8],
+    bounds: &(Point, Point),
+    transform: &crate::core::viewport::Transform,
+) {
     if data.is_empty() {
         // Render a placeholder for empty tiles with transform applied
         let (min_point, max_point) = *bounds;
         let tile_rect = apply_transform_to_rect(rect, min_point, max_point, transform);
-        ui.painter().rect_filled(tile_rect, 0.0, Color32::from_rgb(200, 200, 200));
+        ui.painter()
+            .rect_filled(tile_rect, 0.0, Color32::from_rgb(200, 200, 200));
         return;
     }
 
     // Create a simple but stable texture key
-    let texture_key = format!("tile_{}_{}", 
-        (bounds.0.x as i32), 
-        (bounds.0.y as i32)
-    );
-    
+    let texture_key = format!("tile_{}_{}", (bounds.0.x as i32), (bounds.0.y as i32));
+
     // Try to load the image
     match image::load_from_memory(data) {
         Ok(img) => {
             let rgba_img = img.to_rgba8();
             let (width, height) = rgba_img.dimensions();
-            
+
             // Only proceed if we have valid dimensions
             if width > 0 && height > 0 {
                 let color_image = ColorImage::from_rgba_unmultiplied(
                     [width as usize, height as usize],
                     &rgba_img.into_raw(),
                 );
-                
-                let texture = ui.ctx().load_texture(
-                    texture_key, 
-                    color_image, 
-                    egui::TextureOptions::LINEAR
-                );
-                
+
+                let texture =
+                    ui.ctx()
+                        .load_texture(texture_key, color_image, egui::TextureOptions::LINEAR);
+
                 let texture_id = texture.id();
-                
+
                 // Apply transform to tile positioning (like Leaflet's CSS transforms)
                 let (min_point, max_point) = *bounds;
                 let tile_rect = apply_transform_to_rect(rect, min_point, max_point, transform);
@@ -486,11 +561,16 @@ fn render_tile_with_transform(ui: &mut Ui, rect: Rect, data: &[u8], bounds: &(Po
                     egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(1.0)),
                     Color32::WHITE,
                 );
-                
+
                 // Debug: Log successful tile rendering with transform
                 if data.len() < 1000 {
-                    println!("🖼️ [RENDER] Rendered transformed tile: {} bytes, {}x{}, scale: {:.2}", 
-                             data.len(), width, height, transform.scale);
+                    println!(
+                        "🖼️ [RENDER] Rendered transformed tile: {} bytes, {}x{}, scale: {:.2}",
+                        data.len(),
+                        width,
+                        height,
+                        transform.scale
+                    );
                 }
             } else {
                 println!("❌ [RENDER] Invalid tile dimensions: {}x{}", width, height);
@@ -498,9 +578,13 @@ fn render_tile_with_transform(ui: &mut Ui, rect: Rect, data: &[u8], bounds: &(Po
             }
         }
         Err(e) => {
-            println!("❌ [RENDER] Failed to load tile image: {} ({} bytes), error: {}", 
-                     texture_key, data.len(), e);
-            
+            println!(
+                "❌ [RENDER] Failed to load tile image: {} ({} bytes), error: {}",
+                texture_key,
+                data.len(),
+                e
+            );
+
             render_error_tile_with_transform(ui, rect, bounds, "Image decode error", transform);
         }
     }
@@ -515,13 +599,10 @@ fn apply_transform_to_rect(
 ) -> Rect {
     // Get the container center for transform origin
     let container_center = container_rect.center();
-    
+
     // Transform origin is the center of the container (like Leaflet's default)
-    let origin = egui::Pos2::new(
-        container_center.x,
-        container_center.y,
-    );
-    
+    let origin = egui::Pos2::new(container_center.x, container_center.y);
+
     // Calculate original tile position
     let original_min = egui::Pos2::new(
         container_rect.min.x + min_point.x as f32,
@@ -531,37 +612,43 @@ fn apply_transform_to_rect(
         container_rect.min.x + max_point.x as f32,
         container_rect.min.y + max_point.y as f32,
     );
-    
+
     // Apply scale around origin (like CSS transform-origin)
     let scale = transform.scale as f32;
-    
+
     // Transform min point
     let min_offset_from_origin = original_min - origin;
     let scaled_min_offset = min_offset_from_origin * scale;
-    let transformed_min = origin + scaled_min_offset + egui::Vec2::new(
-        transform.translate.x as f32,
-        transform.translate.y as f32,
-    );
-    
+    let transformed_min = origin
+        + scaled_min_offset
+        + egui::Vec2::new(transform.translate.x as f32, transform.translate.y as f32);
+
     // Transform max point
     let max_offset_from_origin = original_max - origin;
     let scaled_max_offset = max_offset_from_origin * scale;
-    let transformed_max = origin + scaled_max_offset + egui::Vec2::new(
-        transform.translate.x as f32,
-        transform.translate.y as f32,
-    );
-    
+    let transformed_max = origin
+        + scaled_max_offset
+        + egui::Vec2::new(transform.translate.x as f32, transform.translate.y as f32);
+
     Rect::from_two_pos(transformed_min, transformed_max)
 }
 
-fn render_error_tile_with_transform(ui: &mut Ui, rect: Rect, bounds: &(Point, Point), error_msg: &str, transform: &crate::core::viewport::Transform) {
+fn render_error_tile_with_transform(
+    ui: &mut Ui,
+    rect: Rect,
+    bounds: &(Point, Point),
+    error_msg: &str,
+    transform: &crate::core::viewport::Transform,
+) {
     let (min_point, max_point) = *bounds;
     let tile_rect = apply_transform_to_rect(rect, min_point, max_point, transform);
-    
+
     // Render a distinctive error tile
-    ui.painter().rect_filled(tile_rect, 0.0, Color32::from_rgb(255, 200, 200));
-    ui.painter().rect_stroke(tile_rect, 0.0, egui::Stroke::new(1.0, Color32::RED));
-    
+    ui.painter()
+        .rect_filled(tile_rect, 0.0, Color32::from_rgb(255, 200, 200));
+    ui.painter()
+        .rect_stroke(tile_rect, 0.0, egui::Stroke::new(1.0, Color32::RED));
+
     // Add error text if tile is large enough
     if tile_rect.width() > 50.0 && tile_rect.height() > 50.0 {
         ui.painter().text(
@@ -574,11 +661,22 @@ fn render_error_tile_with_transform(ui: &mut Ui, rect: Rect, bounds: &(Point, Po
     }
 }
 
-fn render_textured_tile(ui: &mut Ui, rect: Rect, texture_id: egui::TextureId, bounds: &(Point, Point)) {
+fn render_textured_tile(
+    ui: &mut Ui,
+    rect: Rect,
+    texture_id: egui::TextureId,
+    bounds: &(Point, Point),
+) {
     let (min_point, max_point) = *bounds;
     let tile_rect = Rect::from_two_pos(
-        egui::Pos2::new(rect.min.x + min_point.x as f32, rect.min.y + min_point.y as f32),
-        egui::Pos2::new(rect.min.x + max_point.x as f32, rect.min.y + max_point.y as f32),
+        egui::Pos2::new(
+            rect.min.x + min_point.x as f32,
+            rect.min.y + min_point.y as f32,
+        ),
+        egui::Pos2::new(
+            rect.min.x + max_point.x as f32,
+            rect.min.y + max_point.y as f32,
+        ),
     );
 
     // Render the tile
@@ -590,7 +688,13 @@ fn render_textured_tile(ui: &mut Ui, rect: Rect, texture_id: egui::TextureId, bo
     );
 }
 
-fn render_textured_tile_with_transform(ui: &mut Ui, rect: Rect, texture_id: egui::TextureId, bounds: &(Point, Point), transform: &crate::core::viewport::Transform) {
+fn render_textured_tile_with_transform(
+    ui: &mut Ui,
+    rect: Rect,
+    texture_id: egui::TextureId,
+    bounds: &(Point, Point),
+    transform: &crate::core::viewport::Transform,
+) {
     let (min_point, max_point) = *bounds;
     let tile_rect = apply_transform_to_rect(rect, min_point, max_point, transform);
 
@@ -723,7 +827,7 @@ mod tests {
             .center(51.5074, -0.1278)
             .zoom(12.0)
             .interactive(false);
-        
+
         assert_eq!(map.center.lat, 51.5074);
         assert_eq!(map.zoom, 12.0);
         assert!(!map.interactive);
@@ -736,4 +840,4 @@ mod tests {
         assert_eq!(london.center.lng, -0.1278);
         assert_eq!(london.zoom, 10.0);
     }
-} 
+}

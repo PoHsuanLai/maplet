@@ -167,12 +167,7 @@ impl RenderContext {
     }
 
     /// Render a tile to the screen with proper error handling and validation
-    pub fn render_tile(
-        &mut self,
-        data: &[u8],
-        bounds: (Point, Point),
-        opacity: f32,
-    ) -> Result<()> {
+    pub fn render_tile(&mut self, data: &[u8], bounds: (Point, Point), opacity: f32) -> Result<()> {
         // Validate bounds
         if bounds.0.x >= bounds.1.x || bounds.0.y >= bounds.1.y {
             return Err("Invalid tile bounds".into());
@@ -191,12 +186,12 @@ impl RenderContext {
         };
 
         if let Some(clipped_bounds) = final_bounds {
-        // For now, just queue the tile for rendering
-        self.drawing_queue.push(DrawCommand::Tile {
-            data: data.to_vec(),
+            // For now, just queue the tile for rendering
+            self.drawing_queue.push(DrawCommand::Tile {
+                data: data.to_vec(),
                 bounds: clipped_bounds,
-            opacity,
-        });
+                opacity,
+            });
         }
         // If clipped_bounds is None, the tile is completely outside viewport and shouldn't be rendered
         Ok(())
@@ -217,11 +212,11 @@ impl RenderContext {
         };
 
         if let Some(clipped_bounds) = final_bounds {
-        self.drawing_queue.push(DrawCommand::TileTextured {
-            texture_id,
+            self.drawing_queue.push(DrawCommand::TileTextured {
+                texture_id,
                 bounds: clipped_bounds,
-            opacity,
-        });
+                opacity,
+            });
         }
         // If clipped_bounds is None, the tile is completely outside viewport and shouldn't be rendered
         Ok(())
@@ -248,23 +243,20 @@ impl RenderContext {
     fn clip_bounds_to_viewport(&self, bounds: (Point, Point)) -> Option<(Point, Point)> {
         if let Some((clip_min, clip_max)) = self.clip_bounds {
             let (tile_min, tile_max) = bounds;
-            
+
             // Check if tile is completely outside clipping area
-            if tile_max.x < clip_min.x || tile_min.x > clip_max.x ||
-               tile_max.y < clip_min.y || tile_min.y > clip_max.y {
+            if tile_max.x < clip_min.x
+                || tile_min.x > clip_max.x
+                || tile_max.y < clip_min.y
+                || tile_min.y > clip_max.y
+            {
                 return None; // Completely outside, don't render
             }
-            
+
             // Clip the bounds to the viewport
-            let clipped_min = Point::new(
-                tile_min.x.max(clip_min.x),
-                tile_min.y.max(clip_min.y),
-            );
-            let clipped_max = Point::new(
-                tile_max.x.min(clip_max.x),
-                tile_max.y.min(clip_max.y),
-            );
-            
+            let clipped_min = Point::new(tile_min.x.max(clip_min.x), tile_min.y.max(clip_min.y));
+            let clipped_max = Point::new(tile_max.x.min(clip_max.x), tile_max.y.min(clip_max.y));
+
             Some((clipped_min, clipped_max))
         } else {
             Some(bounds) // No clipping bounds set

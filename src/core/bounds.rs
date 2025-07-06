@@ -177,23 +177,23 @@ impl GeometryOps<Point> for Bounds {
     fn contains_point(&self, point: &Point) -> bool {
         self.contains(point)
     }
-    
+
     fn intersects_bounds(&self, other: &Self) -> bool {
         self.intersects(other)
     }
-    
+
     fn extend_with_point(&mut self, point: &Point) {
         self.extend(point)
     }
-    
+
     fn center(&self) -> Point {
         self.center()
     }
-    
+
     fn is_valid(&self) -> bool {
         self.is_valid()
     }
-    
+
     fn area(&self) -> f64 {
         self.area()
     }

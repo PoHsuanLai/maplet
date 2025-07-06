@@ -38,15 +38,17 @@ impl Converter {
     ) -> Result<Point, ConversionError> {
         match (from, to) {
             (CoordinateSystem::WGS84, CoordinateSystem::WebMercator) => {
-                // Use the unified Web Mercator projection from viewport
+                // Use the new world coordinate projection from viewport
                 let lat_lng = LatLng::new(point.y, point.x);
-                let mercator = crate::core::viewport::Viewport::default().project(&lat_lng, None);
-                Ok(Point::new(mercator.x, mercator.y))
+                let world_point =
+                    crate::core::viewport::Viewport::default().project_to_world(&lat_lng);
+                Ok(Point::new(world_point.x, world_point.y))
             }
             (CoordinateSystem::WebMercator, CoordinateSystem::WGS84) => {
-                // Use the unified Web Mercator unprojection from viewport
-                let mercator_point = crate::core::geo::Point::new(point.x, point.y);
-                let lat_lng = crate::core::viewport::Viewport::default().unproject(&mercator_point, None);
+                // Use the new world coordinate unprojection from viewport
+                let world_point = crate::core::geo::Point::new(point.x, point.y);
+                let lat_lng =
+                    crate::core::viewport::Viewport::default().unproject_from_world(&world_point);
                 Ok(Point::new(lat_lng.lng, lat_lng.lat))
             }
             (CoordinateSystem::WGS84, CoordinateSystem::UTM { zone, northern }) => {

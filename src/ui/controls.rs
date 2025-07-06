@@ -31,7 +31,7 @@ impl ControlConfig {
             margin: 5.0,
         }
     }
-    
+
     pub fn full_controls() -> Self {
         Self {
             visible: true,
@@ -39,7 +39,7 @@ impl ControlConfig {
             margin: 15.0,
         }
     }
-    
+
     pub fn mobile_friendly() -> Self {
         Self {
             visible: true,
@@ -81,11 +81,11 @@ impl Default for ControlManager {
 /// Implement unified configuration trait for ControlManager
 impl crate::traits::Configurable for ControlManager {
     type Config = ControlConfig;
-    
+
     fn config(&self) -> &Self::Config {
         &self.config
     }
-    
+
     fn set_config(&mut self, config: Self::Config) -> crate::Result<()> {
         self.config = config;
         Ok(())

@@ -6,9 +6,9 @@
 use crate::background::tasks::{BackgroundTask, TaskId, TaskPriority};
 use crate::core::geo::LatLngBounds;
 use crate::data::geojson::{GeoJson, GeoJsonFeature, GeoJsonLayer};
+use crate::prelude::{Future, Pin};
 use crate::traits::GeometryOps;
 use crate::Result;
-use crate::prelude::{Future, Pin};
 
 #[cfg(feature = "debug")]
 use log::{debug, error, info};

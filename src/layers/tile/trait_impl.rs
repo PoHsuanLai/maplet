@@ -30,11 +30,11 @@ impl LayerTrait for TileLayer {
                 // Create animated viewport with proper transform
                 let mut animated_viewport = viewport.clone();
                 animated_viewport.set_transform(animation_state.transform);
-                
+
                 // Apply animation state to viewport center and zoom for tile calculations
                 animated_viewport.center = animation_state.center;
                 animated_viewport.zoom = animation_state.zoom;
-                
+
                 return self.render_tiles(context, &animated_viewport);
             }
         }
@@ -92,4 +92,3 @@ impl LayerTrait for TileLayer {
         Ok(())
     }
 }
-

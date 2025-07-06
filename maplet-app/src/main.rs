@@ -4,7 +4,7 @@ use maplet::{Map, MapTheme};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-    
+
     println!("🚀 [DEBUG] Starting Maplet app...");
 
     let options = eframe::NativeOptions {
@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("🖼️ [DEBUG] Creating eframe app...");
-    
+
     // Run the app with proper shutdown handling
     let app_result = eframe::run_native(
         "Maplet Demo",
@@ -44,8 +44,6 @@ struct MapletApp {
     shutdown_requested: bool,
     /// Zed-inspired performance mode selection
     performance_mode: maplet::core::config::MapPerformanceProfile,
-    /// Animation style selection
-    animation_style: maplet::layers::animation::EasingType,
 }
 
 impl MapletApp {
@@ -57,8 +55,7 @@ impl MapletApp {
             show_controls: true,
             show_debug_panel: false,
             shutdown_requested: false,
-            performance_mode: maplet::core::config::MapPerformanceProfile::Balanced, 
-            animation_style: maplet::layers::animation::EasingType::UltraSmooth,
+            performance_mode: maplet::core::config::MapPerformanceProfile::Balanced,
         }
     }
 
@@ -80,25 +77,38 @@ impl MapletApp {
             if ui.button("🗼 Tokyo").clicked() {
                 println!("🗼 [DEBUG] Tokyo location selected");
                 self.selected_location = (35.6762, 139.6503);
-                
+
                 // Debug: Calculate expected tile coordinates for Tokyo
                 let lat = 35.6762;
                 let lng = 139.6503;
                 let zoom = 12.0;
-                println!("🗼 [DEBUG] Tokyo coordinates: lat={:.4}, lng={:.4}", lat, lng);
-                
+                println!(
+                    "🗼 [DEBUG] Tokyo coordinates: lat={:.4}, lng={:.4}",
+                    lat, lng
+                );
+
                 // Create a temporary viewport to test projection
                 let viewport = maplet::core::viewport::Viewport::new(
                     maplet::core::geo::LatLng::new(lat, lng),
                     zoom,
-                    maplet::core::geo::Point::new(800.0, 600.0)
+                    maplet::core::geo::Point::new(800.0, 600.0),
                 );
-                let projected = viewport.project(&maplet::core::geo::LatLng::new(lat, lng), Some(zoom));
+                let projected =
+                    viewport.project(&maplet::core::geo::LatLng::new(lat, lng), Some(zoom));
                 let tile_x = (projected.x / 256.0).floor() as u32;
                 let tile_y = (projected.y / 256.0).floor() as u32;
-                println!("🗼 [DEBUG] Tokyo projected to x={:.2}, y={:.2}", projected.x, projected.y);
-                println!("🗼 [DEBUG] Tokyo tile coordinates: ({}, {}) at zoom {}", tile_x, tile_y, zoom as u8);
-                println!("🗼 [DEBUG] Expected tile URL: https://a.tile.openstreetmap.org/{}/{}/{}.png", zoom as u8, tile_x, tile_y);
+                println!(
+                    "🗼 [DEBUG] Tokyo projected to x={:.2}, y={:.2}",
+                    projected.x, projected.y
+                );
+                println!(
+                    "🗼 [DEBUG] Tokyo tile coordinates: ({}, {}) at zoom {}",
+                    tile_x, tile_y, zoom as u8
+                );
+                println!(
+                    "🗼 [DEBUG] Expected tile URL: https://a.tile.openstreetmap.org/{}/{}/{}.png",
+                    zoom as u8, tile_x, tile_y
+                );
             }
             if ui.button("🦘 Sydney").clicked() {
                 println!("🦘 [DEBUG] Sydney location selected");
@@ -117,15 +127,15 @@ impl eframe::App for MapletApp {
                 println!("🔄 [DEBUG] App update() called {} times", UPDATE_COUNTER);
             }
         }
-        
-        // Handle window close button properly 
+
+        // Handle window close button properly
         if ctx.input(|i| i.viewport().close_requested()) {
             println!("❌ [DEBUG] Window close button clicked, shutting down...");
             self.shutdown_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             std::process::exit(0);
         }
-        
+
         // Handle graceful shutdown
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             println!("⚠️ [DEBUG] Escape key pressed, requesting close");
@@ -143,14 +153,14 @@ impl eframe::App for MapletApp {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.label("🗺️ Maplet Demo");
-                
+
                 ui.separator();
-                
+
                 // Location presets
                 self.location_presets(ui);
-                
+
                 ui.separator();
-                
+
                 // Theme selector
                 ui.label("Theme:");
                 egui::ComboBox::from_id_source("theme")
@@ -160,11 +170,11 @@ impl eframe::App for MapletApp {
                         ui.selectable_value(&mut self.theme, MapTheme::Dark, "Dark");
                         ui.selectable_value(&mut self.theme, MapTheme::Satellite, "Satellite");
                     });
-                
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.checkbox(&mut self.show_debug_panel, "Debug");
                     ui.checkbox(&mut self.show_controls, "Controls");
-                    
+
                     // Add quit button for testing
                     if ui.button("Quit").clicked() {
                         println!("🚪 [DEBUG] Quit button clicked");
@@ -182,9 +192,9 @@ impl eframe::App for MapletApp {
             .default_width(250.0)
             .show(ctx, |ui| {
                 ui.heading("🎛️ Map Controls");
-                
+
                 ui.separator();
-                
+
                 ui.label("📍 Location:");
                 ui.horizontal(|ui| {
                     if ui.button("🌉 San Francisco").clicked() {
@@ -197,75 +207,70 @@ impl eframe::App for MapletApp {
                 ui.horizontal(|ui| {
                     if ui.button("🗼 Tokyo").clicked() {
                         self.selected_location = (35.6762, 139.6503);
-                        
+
                         // Debug: Calculate expected tile coordinates for Tokyo
                         let lat = 35.6762;
                         let lng = 139.6503;
                         let zoom = 12.0;
-                        println!("🗼 [DEBUG] Tokyo location selected (panel): lat={:.4}, lng={:.4}", lat, lng);
-                        
+                        println!(
+                            "🗼 [DEBUG] Tokyo location selected (panel): lat={:.4}, lng={:.4}",
+                            lat, lng
+                        );
+
                         // Create a temporary viewport to test projection
                         let viewport = maplet::core::viewport::Viewport::new(
                             maplet::core::geo::LatLng::new(lat, lng),
                             zoom,
-                            maplet::core::geo::Point::new(800.0, 600.0)
+                            maplet::core::geo::Point::new(800.0, 600.0),
                         );
-                        let projected = viewport.project(&maplet::core::geo::LatLng::new(lat, lng), Some(zoom));
+                        let projected =
+                            viewport.project(&maplet::core::geo::LatLng::new(lat, lng), Some(zoom));
                         let tile_x = (projected.x / 256.0).floor() as u32;
                         let tile_y = (projected.y / 256.0).floor() as u32;
-                        println!("🗼 [DEBUG] Tokyo tile coordinates (panel): ({}, {}) at zoom {}", tile_x, tile_y, zoom as u8);
+                        println!(
+                            "🗼 [DEBUG] Tokyo tile coordinates (panel): ({}, {}) at zoom {}",
+                            tile_x, tile_y, zoom as u8
+                        );
                     }
                     if ui.button("🗽 New York").clicked() {
                         self.selected_location = (40.7128, -74.0060);
                     }
                 });
-                
+
                 ui.separator();
-                
+
                 ui.label("🎨 Theme:");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.theme, MapTheme::Light, "☀️ Light");
                     ui.selectable_value(&mut self.theme, MapTheme::Dark, "🌙 Dark");
                 });
-                
+
                 ui.separator();
-                
+
                 ui.label("⚡ Performance (Zed-inspired):");
                 ui.vertical(|ui| {
-                    ui.selectable_value(&mut self.performance_mode, 
-                        maplet::core::config::MapPerformanceProfile::LowQuality, 
-                        "🔋 Battery (30fps)");
-                    ui.selectable_value(&mut self.performance_mode, 
-                        maplet::core::config::MapPerformanceProfile::Balanced, 
-                        "⚖️ Balanced (60fps)");
-                    ui.selectable_value(&mut self.performance_mode, 
-                        maplet::core::config::MapPerformanceProfile::HighQuality, 
-                        "🚀 High Quality (60fps)");
+                    ui.selectable_value(
+                        &mut self.performance_mode,
+                        maplet::core::config::MapPerformanceProfile::LowQuality,
+                        "🔋 Battery (30fps)",
+                    );
+                    ui.selectable_value(
+                        &mut self.performance_mode,
+                        maplet::core::config::MapPerformanceProfile::Balanced,
+                        "⚖️ Balanced (60fps)",
+                    );
+                    ui.selectable_value(
+                        &mut self.performance_mode,
+                        maplet::core::config::MapPerformanceProfile::HighQuality,
+                        "🚀 High Quality (60fps)",
+                    );
                 });
-                
+
                 ui.separator();
-                
-                ui.label("🎭 Animation Style:");
-                ui.vertical(|ui| {
-                    ui.selectable_value(&mut self.animation_style, 
-                        maplet::layers::animation::EasingType::Linear, 
-                        "📐 Linear");
-                    ui.selectable_value(&mut self.animation_style, 
-                        maplet::layers::animation::EasingType::EaseOut, 
-                        "📉 Ease Out");
-                    ui.selectable_value(&mut self.animation_style, 
-                        maplet::layers::animation::EasingType::Smooth, 
-                        "✨ Zed Smooth");
-                    ui.selectable_value(&mut self.animation_style, 
-                        maplet::layers::animation::EasingType::UltraSmooth, 
-                        "🌟 Ultra Smooth");
-                });
-                
-                ui.separator();
-                
+
                 ui.checkbox(&mut self.show_controls, "🔧 Show map controls");
                 ui.checkbox(&mut self.show_debug_panel, "🐛 Show debug info");
-                
+
                 if ui.button("🚪 Exit").clicked() {
                     self.shutdown_requested = true;
                 }
@@ -275,24 +280,25 @@ impl eframe::App for MapletApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.show_debug_panel {
                 ui.horizontal(|ui| {
-                    ui.label(format!("📍 Location: ({:.4}, {:.4})", 
-                        self.selected_location.0, self.selected_location.1));
+                    ui.label(format!(
+                        "📍 Location: ({:.4}, {:.4})",
+                        self.selected_location.0, self.selected_location.1
+                    ));
                     ui.label(format!("🎨 Theme: {:?}", self.theme));
                     ui.label(format!("⚡ Performance: {:?}", self.performance_mode));
                 });
                 ui.separator();
             }
-            
+
             ui.add(
                 Map::new()
                     .center(self.selected_location.0, self.selected_location.1)
                     .zoom(12.0)
                     .theme(self.theme)
                     .controls(self.show_controls)
-                    .attribution_text("© Maplet Demo - Zed-Inspired Smoothness")
-                    // TODO: Add these methods to the Map widget
-                    // .performance_profile(self.performance_mode)
-                    // .animation_style(self.animation_style)
+                    .attribution_text("© Maplet Demo - Zed-Inspired Smoothness"), // TODO: Add these methods to the Map widget
+                                                                                  // .performance_profile(self.performance_mode)
+                                                                                  // .animation_style(self.animation_style)
             );
         });
 
@@ -305,4 +311,4 @@ impl eframe::App for MapletApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         println!("🚪 [DEBUG] MapletApp::on_exit() called - Application shutting down gracefully");
     }
-} 
+}

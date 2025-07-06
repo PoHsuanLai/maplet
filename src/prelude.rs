@@ -7,8 +7,8 @@ pub use crate::core::{
     bounds::Bounds,
     builder::MapBuilder,
     config::{
-        FrameTimingConfig, GpuRenderingConfig, InteractionAnimationConfig, MapPerformanceOptions,
-        MapPerformanceProfile, TextureFilterMode, TileLoadingConfig, UnifiedMapConfig,
+        FrameTimingConfig, GpuRenderingConfig, MapPerformanceOptions, MapPerformanceProfile,
+        TextureFilterMode, TileLoadingConfig, UnifiedMapConfig,
     },
     geo::{LatLng, LatLngBounds, Point, TileCoord},
     map::{Map as CoreMap, MapOptions, UpdateOrchestrator, UpdatePerformanceMetrics},
@@ -30,9 +30,7 @@ pub use crate::input::{
     handler::{Action, InputHandler},
 };
 
-pub use crate::layers::animation::{
-    AnimationManager, EasingType, ZoomAnimation, ZoomAnimationState,
-};
+pub use crate::layers::animation::{AnimationManager, ZoomAnimation, ZoomAnimationState};
 
 pub use crate::core::viewport::Transform;
 
@@ -41,9 +39,7 @@ pub use crate::spatial::{
     index::{SpatialIndex, SpatialItem},
 };
 
-pub use crate::background::tasks::{
-    BackgroundTaskManager, TaskManagerConfig, TaskPriority,
-};
+pub use crate::background::tasks::{BackgroundTaskManager, TaskManagerConfig, TaskPriority};
 
 pub use crate::runtime::{
     runtime, spawn, spawn_with_result, AsyncHandle, AsyncHandleWithResult, AsyncSpawner,
@@ -70,13 +66,13 @@ pub use crate::ui::{
 pub use crate::{Error as MapError, Result};
 
 pub use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-    collections::{BinaryHeap, VecDeque},
-    sync::Mutex,
     cmp::Ordering,
+    collections::{BinaryHeap, VecDeque},
     future::Future,
     pin::Pin,
+    sync::Arc,
+    sync::Mutex,
+    time::{Duration, Instant},
 };
 
 pub use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
@@ -85,9 +81,8 @@ pub use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
 
 // Shared traits for common patterns
 pub use crate::traits::{
-    BackgroundTask, Cacheable, CacheStats, CoordinateTransform, 
-    LayerOperations, Renderable, SpatialOperations, ViewportAware, Configurable,
-    ConfigPreset, ConfigBuilder,
+    BackgroundTask, CacheStats, Cacheable, ConfigBuilder, ConfigPreset, Configurable,
+    CoordinateTransform, LayerOperations, Renderable, SpatialOperations, ViewportAware,
 };
 
 #[cfg(feature = "egui")]

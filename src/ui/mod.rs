@@ -1,4 +1,3 @@
-
 pub mod elements;
 pub mod traits;
 
@@ -31,9 +30,9 @@ pub use components::*;
 
 pub trait UiMapExt {
     fn map(&mut self) -> egui::Response;
-    
+
     fn map_at(&mut self, lat: f64, lng: f64) -> egui::Response;
-    
+
     fn map_at_zoom(&mut self, lat: f64, lng: f64, zoom: f64) -> egui::Response;
 }
 
@@ -41,11 +40,11 @@ impl UiMapExt for egui::Ui {
     fn map(&mut self) -> egui::Response {
         self.add(Map::new())
     }
-    
+
     fn map_at(&mut self, lat: f64, lng: f64) -> egui::Response {
         self.add(Map::new().center(lat, lng))
     }
-    
+
     fn map_at_zoom(&mut self, lat: f64, lng: f64, zoom: f64) -> egui::Response {
         self.add(Map::new().center(lat, lng).zoom(zoom))
     }

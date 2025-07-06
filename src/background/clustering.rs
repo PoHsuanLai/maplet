@@ -60,15 +60,16 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for ClusterMarkersTask<T> 
             AsyncExecutor::execute_blocking_boxed(move || {
                 // Use the core clustering implementation
                 let mut clustering = Clustering::new(config);
-                
+
                 // Add all items to the clustering system
                 for item in items {
                     let _ = clustering.add_item(item); // Ignore errors for background processing
                 }
-                
+
                 // Get clusters for the viewport
                 Ok(clustering.get_clusters(&viewport_bounds, zoom_level))
-            }).await
+            })
+            .await
         })
     }
 
@@ -135,17 +136,18 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for UpdateClustersTask<T> 
             AsyncExecutor::execute_blocking_boxed(move || {
                 // Use the core clustering implementation
                 let mut clustering = Clustering::new(config);
-                
+
                 // Extract all items from existing clusters and add to clustering system
                 for cluster in existing_clusters {
                     for item in cluster.items {
                         let _ = clustering.add_item(item); // Ignore errors for background processing
                     }
                 }
-                
+
                 // Re-cluster with new parameters
                 Ok(clustering.get_clusters(&new_viewport_bounds, new_zoom_level))
-            }).await
+            })
+            .await
         })
     }
 
@@ -159,7 +161,11 @@ impl<T: Clone + Send + Sync + 'static> BackgroundTask for UpdateClustersTask<T> 
 
     fn estimated_duration(&self) -> std::time::Duration {
         // Use unified duration estimation helper for cluster updates
-        crate::background::tasks::estimate_duration_from_item_count(self.existing_clusters.len(), 10, 2)
+        crate::background::tasks::estimate_duration_from_item_count(
+            self.existing_clusters.len(),
+            10,
+            2,
+        )
     }
 }
 

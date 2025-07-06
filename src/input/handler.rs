@@ -1,8 +1,8 @@
 use crate::{
     core::geo::{LatLng, LatLngBounds, Point},
     input::events::{InputEvent, MapEvent},
-    traits::{PointMath, Lerp},
-    prelude::{Duration, Instant, VecDeque, HashMap},
+    prelude::{Duration, HashMap, Instant, VecDeque},
+    traits::Lerp,
     Result,
 };
 
@@ -35,17 +35,17 @@ pub enum Action {
         duration: Duration,
         ease_linearity: f64,
     },
+    /// Start dragging mode (DOM-based dragging like Leaflet)
+    StartDrag,
+    /// End dragging mode and commit center changes
+    EndDrag,
 }
-
-// Use the unified easing type from animation module
-use crate::layers::animation::EasingType;
 
 /// Active animation state
 #[derive(Debug, Clone)]
 pub struct Animation {
     pub action: Action,
     pub start_time: Instant,
-    pub easing: EasingType,
     pub initial_center: LatLng,
     pub initial_zoom: f64,
 }
@@ -55,7 +55,6 @@ impl Animation {
         Self {
             action,
             start_time: Instant::now(),
-            easing: EasingType::EaseOut,
             initial_center: current_center,
             initial_zoom: current_zoom,
         }
@@ -69,15 +68,17 @@ impl Animation {
             Action::Zoom { duration, .. } => *duration,
             Action::SetView { duration, .. } => *duration,
             Action::PanInertia { duration, .. } => *duration,
+            Action::StartDrag | Action::EndDrag => return None, // No duration for drag actions
         };
 
         if elapsed >= duration {
             return None; // Animation finished
         }
 
-        let progress = self
-            .easing
-            .apply(elapsed.as_secs_f64() / duration.as_secs_f64());
+        // Use the fixed ease-out cubic function from the animation module
+        let progress = crate::layers::animation::ease_out_cubic(
+            elapsed.as_secs_f64() / duration.as_secs_f64(),
+        );
 
         match &self.action {
             Action::SetView { center, zoom, .. } => {
@@ -93,157 +94,11 @@ impl Animation {
                 // Pan animations are handled differently - they modify the target directly
                 Some((self.initial_center, self.initial_zoom))
             }
-        }
-    }
-}
-
-/// Drag state tracking for map dragging
-#[derive(Debug, Clone)]
-struct DragState {
-    /// Whether dragging is currently active
-    active: bool,
-    /// Initial mouse position when drag started
-    start_point: Option<Point>,
-    /// Last mouse position
-    last_point: Option<Point>,
-    /// Positions for inertia calculation (like Leaflet's position tracking)
-    positions: VecDeque<(Point, Instant)>,
-    /// Times for inertia calculation
-    times: VecDeque<Instant>,
-    /// Whether the drag has moved (for distinguishing from clicks)
-    moved: bool,
-    /// Click tolerance in pixels
-    click_tolerance: f64,
-}
-
-impl Default for DragState {
-    fn default() -> Self {
-        Self {
-            active: false,
-            start_point: None,
-            last_point: None,
-            positions: VecDeque::new(),
-            times: VecDeque::new(),
-            moved: false,
-            click_tolerance: 3.0, // Like Leaflet's default
-        }
-    }
-}
-
-impl DragState {
-    /// Start a new drag operation
-    fn start(&mut self, point: Point) {
-        self.active = true;
-        self.start_point = Some(point);
-        self.last_point = Some(point);
-        self.moved = false;
-        self.positions.clear();
-        self.times.clear();
-        self.positions.push_back((point, Instant::now()));
-        self.times.push_back(Instant::now());
-    }
-
-    /// Update drag position and track for inertia
-    fn update(&mut self, point: Point) -> Option<Point> {
-        if !self.active {
-            return None;
-        }
-
-        let start = self.start_point?;
-        let last = self.last_point?;
-
-        // Check if we've moved beyond click tolerance
-        if !self.moved {
-            let delta = point.subtract(&start);
-            if delta.x.abs() + delta.y.abs() >= self.click_tolerance {
-                self.moved = true;
+            Action::StartDrag | Action::EndDrag => {
+                // Drag actions don't have animations
+                None
             }
         }
-
-        if self.moved {
-            let delta = point.subtract(&last);
-            self.last_point = Some(point);
-
-            // Track positions for inertia (like Leaflet's position tracking)
-            let now = Instant::now();
-            self.positions.push_back((point, now));
-            self.times.push_back(now);
-
-            // Prune old positions (keep only last 50ms like Leaflet)
-            self.prune_positions(now);
-
-            Some(delta)
-        } else {
-            None
-        }
-    }
-
-    /// Prune old positions for inertia calculation
-    fn prune_positions(&mut self, time: Instant) {
-        while let Some(&front_time) = self.times.front() {
-            if time.duration_since(front_time).as_millis() > 50 {
-                self.positions.pop_front();
-                self.times.pop_front();
-            } else {
-                break;
-            }
-        }
-    }
-
-    /// End drag and calculate inertia
-    fn end(&mut self) -> Option<Point> {
-        if !self.active || !self.moved {
-            self.active = false;
-            return None;
-        }
-
-        self.active = false;
-
-        // Calculate inertia like Leaflet's _onDragEnd
-        if self.positions.len() < 2 {
-            return None;
-        }
-
-        let last_pos = self.positions.back()?.0;
-        let first_pos = self.positions.front()?.0;
-        let last_time = *self.times.back()?;
-        let first_time = *self.times.front()?;
-
-        let direction = last_pos.subtract(&first_pos);
-        let duration = last_time.duration_since(first_time).as_secs_f64();
-
-        if duration <= 0.0 {
-            return None;
-        }
-
-        // Calculate inertia offset like Leaflet
-        let ease_linearity = 0.2; // Like Leaflet's default
-        let speed_vector = direction.scale(ease_linearity / duration);
-        let speed = (speed_vector.x * speed_vector.x + speed_vector.y * speed_vector.y).sqrt();
-
-        let max_speed = 1500.0; // Like Leaflet's default inertiaMaxSpeed
-        let limited_speed = speed.min(max_speed);
-
-        if limited_speed < 10.0 {
-            return None; // Too slow for inertia
-        }
-
-        let limited_speed_vector = speed_vector.scale(limited_speed / speed);
-        let deceleration = 3400.0; // Like Leaflet's default inertiaDeceleration
-        let deceleration_duration = limited_speed / (deceleration * ease_linearity);
-        let offset = limited_speed_vector.scale(-deceleration_duration / 2.0);
-
-        Some(offset)
-    }
-
-    /// Check if drag is active
-    fn is_active(&self) -> bool {
-        self.active
-    }
-
-    /// Check if drag has moved
-    fn has_moved(&self) -> bool {
-        self.moved
     }
 }
 
@@ -384,7 +239,11 @@ impl MapOperations {
     ) -> Result<()> {
         match action {
             Action::Pan { delta, .. } => {
-                Self::pan(viewport, delta)?;
+                if viewport.is_dragging() {
+                    viewport.raw_pan_by(delta);
+                } else {
+                    Self::pan(viewport, delta)?;
+                }
             }
             Action::Zoom {
                 level, focus_point, ..
@@ -397,6 +256,12 @@ impl MapOperations {
             Action::PanInertia { offset, .. } => {
                 Self::pan_inertia(viewport, offset)?;
             }
+            Action::StartDrag => {
+                viewport.start_drag();
+            }
+            Action::EndDrag => {
+                viewport.end_drag();
+            }
         }
         Ok(())
     }
@@ -407,15 +272,6 @@ pub struct InputHandler {
     pub enabled: bool,
     event_queue: VecDeque<InputEvent>,
     current_animation: Option<Animation>,
-
-    // Drag state management (like Leaflet's Draggable)
-    drag_state: DragState,
-    
-    // Mouse state tracking for proper drag detection
-    mouse_down: bool,
-    mouse_down_position: Option<Point>,
-    mouse_position: Option<Point>,
-    drag_threshold: f64, // Minimum movement to start drag
 
     // Event management
     event_manager: EventManager,
@@ -440,11 +296,6 @@ impl InputHandler {
             enabled: true,
             event_queue: VecDeque::new(),
             current_animation: None,
-            drag_state: DragState::default(),
-            mouse_down: false,
-            mouse_down_position: None,
-            mouse_position: None,
-            drag_threshold: 3.0, // 3 pixels like Leaflet's default
             event_manager: EventManager::new(),
             zoom_on_wheel: true,
             zoom_on_double_click: true,
@@ -474,10 +325,10 @@ impl InputHandler {
         let mut actions = vec![];
 
         match event {
-            InputEvent::Click { position, button: _ } => {
-                // Handle mouse down for potential dragging
-                self.handle_mouse_down(position);
-                
+            InputEvent::Click {
+                position,
+                button: _,
+            } => {
                 // Simple click - emit click event
                 self.event_manager.emit(MapEvent::Click {
                     lat_lng: LatLng::new(0.0, 0.0), // Placeholder - map will convert
@@ -485,21 +336,24 @@ impl InputHandler {
                 });
             }
             InputEvent::MouseMove { position } => {
-                // Convert mouse movement to drag if conditions are met
-                actions.extend(self.convert_mouse_move_to_drag(position, current_center));
+                // Emit mouse move event
+                self.event_manager.emit(MapEvent::MouseMove {
+                    lat_lng: LatLng::new(0.0, 0.0), // Placeholder - map will convert
+                    pixel: position,
+                });
             }
-            InputEvent::DragStart { position } => {
-                // Direct drag start (from external gesture recognizer)
+            InputEvent::DragStart { position: _ } => {
+                // Drag start from egui - use built-in detection completely
                 if self.pan_on_drag {
-                    self.drag_state.start(position);
+                    actions.push(Action::StartDrag);
                     self.event_manager.emit(MapEvent::MoveStart {
                         center: current_center,
                     });
                 }
             }
             InputEvent::Drag { delta } => {
-                // Direct drag (from external gesture recognizer)
-                if self.pan_on_drag && self.drag_state.is_active() {
+                // Drag in progress from egui - just use the delta directly
+                if self.pan_on_drag {
                     actions.push(Action::Pan {
                         delta,
                         animate: false,
@@ -508,10 +362,9 @@ impl InputHandler {
                 }
             }
             InputEvent::DragEnd => {
-                // Direct drag end (from external gesture recognizer) 
-                actions.extend(self.handle_mouse_up());
-                
-                if self.drag_state.has_moved() {
+                // Drag end from egui - clean up
+                if self.pan_on_drag {
+                    actions.push(Action::EndDrag);
                     self.event_manager.emit(MapEvent::MoveEnd {
                         center: current_center,
                     });
@@ -629,92 +482,6 @@ impl InputHandler {
     /// Clear the event queue
     pub fn clear_queue(&mut self) {
         self.event_queue.clear();
-    }
-
-    /// Handle mouse down for gesture recognition
-    fn handle_mouse_down(&mut self, position: Point) {
-        self.mouse_down = true;
-        self.mouse_down_position = Some(position);
-        self.mouse_position = Some(position);
-    }
-
-    /// Handle mouse up for gesture recognition
-    fn handle_mouse_up(&mut self) -> Vec<Action> {
-        let mut actions = vec![];
-        
-        if self.drag_state.is_active() {
-            // End drag
-            if let Some(inertia_offset) = self.drag_state.end() {
-                if self.inertia && inertia_offset.x.abs() + inertia_offset.y.abs() > 1.0 {
-                    let deceleration_duration = (inertia_offset.x * inertia_offset.x
-                        + inertia_offset.y * inertia_offset.y)
-                        .sqrt()
-                        / (self.inertia_deceleration * self.ease_linearity);
-
-                    actions.push(Action::PanInertia {
-                        offset: inertia_offset,
-                        duration: Duration::from_secs_f64(deceleration_duration),
-                        ease_linearity: self.ease_linearity,
-                    });
-                }
-            }
-        }
-
-        self.mouse_down = false;
-        self.mouse_down_position = None;
-        actions
-    }
-
-    /// Convert mouse movement to drag if conditions are met
-    fn convert_mouse_move_to_drag(&mut self, position: Point, current_center: LatLng) -> Vec<Action> {
-        let mut actions = vec![];
-
-        if !self.mouse_down || !self.pan_on_drag {
-            return actions;
-        }
-
-        let start_position = match self.mouse_down_position {
-            Some(pos) => pos,
-            None => return actions,
-        };
-
-        // Check if we've moved beyond drag threshold
-        let distance = position.distance_to(&start_position);
-        
-        if !self.drag_state.is_active() && distance >= self.drag_threshold {
-            // Start dragging
-            self.drag_state.start(start_position);
-            self.event_manager.emit(MapEvent::MoveStart {
-                center: current_center,
-            });
-        }
-
-        if self.drag_state.is_active() {
-            // Continue dragging
-            if let Some(delta) = self.drag_state.update(position) {
-                actions.push(Action::Pan {
-                    delta,
-                    animate: false,
-                    duration: Duration::from_millis(0),
-                });
-            }
-        }
-
-        self.mouse_position = Some(position);
-        actions
-    }
-
-    /// Handle mouse up event (call this when mouse button is released)
-    pub fn handle_mouse_release(&mut self, current_center: LatLng) -> Vec<Action> {
-        let actions = self.handle_mouse_up();
-        
-        if self.drag_state.has_moved() {
-            self.event_manager.emit(MapEvent::MoveEnd {
-                center: current_center,
-            });
-        }
-        
-        actions
     }
 }
 

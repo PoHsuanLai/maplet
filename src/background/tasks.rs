@@ -1,6 +1,6 @@
+use crate::prelude::{Arc, BinaryHeap, Ordering};
 use crate::{runtime, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use crate::prelude::{Ordering, BinaryHeap, Arc};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 /// Priority levels for background tasks
@@ -95,7 +95,7 @@ impl TaskManagerConfig {
             test_mode: false,
         }
     }
-    
+
     pub fn high_performance() -> Self {
         Self {
             max_concurrent_tasks: 16,
@@ -104,7 +104,7 @@ impl TaskManagerConfig {
             test_mode: false,
         }
     }
-    
+
     pub fn for_testing() -> Self {
         Self {
             max_concurrent_tasks: 1,
@@ -131,29 +131,30 @@ pub struct BackgroundTaskManager {
 impl BackgroundTaskManager {
     /// Create a new background task manager
     pub fn new(config: TaskManagerConfig) -> Self {
-        println!("🏗️ [DEBUG] BackgroundTaskManager::new() - Creating task manager with max_concurrent={}, max_queue_size={}", 
-            config.max_concurrent_tasks, config.max_queue_size);
-        
         let (task_tx, task_rx) = unbounded();
         let (result_tx, result_rx) = unbounded();
         let semaphore = Semaphore::new(config.max_concurrent_tasks);
         let shutdown_signal = Arc::new(AtomicBool::new(false));
 
         let worker_handle = if config.test_mode {
-            println!("🧪 [DEBUG] BackgroundTaskManager::new() - Test mode enabled, skipping worker loop");
             None
         } else {
             let worker_semaphore = semaphore.clone();
             let worker_config = config.clone();
             let worker_shutdown = shutdown_signal.clone();
 
-            println!("🚀 [DEBUG] BackgroundTaskManager::new() - Spawning worker loop");
             Some(runtime::spawn(async move {
-                Self::worker_loop(task_rx, result_tx, worker_semaphore, worker_config, worker_shutdown).await;
+                Self::worker_loop(
+                    task_rx,
+                    result_tx,
+                    worker_semaphore,
+                    worker_config,
+                    worker_shutdown,
+                )
+                .await;
             }))
         };
 
-        println!("✅ [DEBUG] BackgroundTaskManager::new() - Task manager created successfully");
         Self {
             config,
             task_tx,
@@ -166,14 +167,15 @@ impl BackgroundTaskManager {
 
     /// Create a new task manager with default configuration
     pub fn with_default_config() -> Self {
-        println!("⚙️ [DEBUG] BackgroundTaskManager::with_default_config() - Creating task manager with default config");
         Self::new(TaskManagerConfig::default())
     }
 
     /// Create a new task manager for testing
     pub fn for_testing() -> Self {
-        println!("🧪 [DEBUG] BackgroundTaskManager::for_testing() - Creating test task manager");
-        let config = TaskManagerConfig{ test_mode: true, ..Default::default() };
+        let config = TaskManagerConfig {
+            test_mode: true,
+            ..Default::default()
+        };
         Self::new(config)
     }
 
@@ -181,11 +183,8 @@ impl BackgroundTaskManager {
     pub fn submit_task(&self, task: Arc<dyn BackgroundTask>) -> Result<()> {
         let task_id = task.task_id().to_string();
         let priority = task.priority();
-        
-        println!("📝 [DEBUG] BackgroundTaskManager::submit_task() - Submitting task '{}' with priority {:?}", task_id, priority);
 
         if self.config.test_mode {
-            println!("🧪 [DEBUG] BackgroundTaskManager::submit_task() - Test mode: executing task synchronously");
             // In test mode, execute tasks immediately and synchronously
             return Ok(());
         }
@@ -198,11 +197,9 @@ impl BackgroundTaskManager {
 
         match self.task_tx.send(prioritized) {
             Ok(()) => {
-                println!("✅ [DEBUG] BackgroundTaskManager::submit_task() - Task '{}' queued successfully", task_id);
                 Ok(())
             }
             Err(_) => {
-                println!("❌ [DEBUG] BackgroundTaskManager::submit_task() - Failed to queue task '{}' (channel closed)", task_id);
                 Err("Task queue is closed".into())
             }
         }
@@ -210,7 +207,6 @@ impl BackgroundTaskManager {
 
     /// Shutdown the task manager and all worker threads
     pub fn shutdown(&self) {
-        println!("🛑 [DEBUG] BackgroundTaskManager::shutdown() - Shutting down task manager");
         self.shutdown_signal.store(true, AtomicOrdering::SeqCst);
     }
 
@@ -257,11 +253,15 @@ impl BackgroundTaskManager {
         shutdown_signal: Arc<AtomicBool>,
     ) {
         let mut task_queue = BinaryHeap::new();
+        let mut last_activity = std::time::Instant::now();
 
         loop {
+            let mut had_activity = false;
+
             // Collect all available tasks
             while let Ok(task) = task_rx.try_recv() {
                 task_queue.push(task);
+                had_activity = true;
 
                 // Drop lowest priority tasks if queue is too large
                 while task_queue.len() > config.max_queue_size {
@@ -288,35 +288,29 @@ impl BackgroundTaskManager {
                         let _ = result_tx.send(task_result);
                         sem_clone.release(); // Release semaphore permit
                     });
+
+                    had_activity = true;
                 } else {
                     // No capacity, put task back
                     task_queue.push(task);
                 }
             }
 
-            // Brief pause to prevent busy-waiting
-            // This is a simple approach - in production you might want more sophisticated timing
-            let sleep_duration = if task_queue.is_empty() { 100 } else { 10 };
+            // OPTIMIZATION: Use proper async sleep instead of busy-wait
+            if had_activity {
+                last_activity = std::time::Instant::now();
+                // Short delay when active to allow other tasks to run
+                crate::runtime::async_utils::async_delay(std::time::Duration::from_millis(1)).await;
+            } else {
+                // Longer delay when idle, but check for shutdown more frequently
+                let idle_duration = last_activity.elapsed();
+                let sleep_duration = if idle_duration < std::time::Duration::from_secs(1) {
+                    std::time::Duration::from_millis(10) // Recently active
+                } else {
+                    std::time::Duration::from_millis(100) // Long idle
+                };
 
-            // Use a simple delay mechanism that works across runtimes
-            let start = std::time::Instant::now();
-            while start.elapsed() < std::time::Duration::from_millis(sleep_duration) {
-                // Simple busy-wait - could be improved with platform-specific sleep
-                std::hint::spin_loop();
-            }
-
-            // Check if we should exit (all channels closed and no tasks)
-            if task_queue.is_empty() && task_rx.is_empty() {
-                // Check if the channel is actually disconnected
-                if task_rx.try_recv().is_err() {
-                    // Channel is likely disconnected, continue anyway
-                    continue;
-                }
-            }
-
-            // Check if we should exit due to shutdown signal
-            if shutdown_signal.load(AtomicOrdering::SeqCst) {
-                break;
+                crate::runtime::async_utils::async_delay(sleep_duration).await;
             }
         }
     }
@@ -325,21 +319,21 @@ impl BackgroundTaskManager {
 /// Implement unified configuration trait for BackgroundTaskManager
 impl crate::traits::Configurable for BackgroundTaskManager {
     type Config = TaskManagerConfig;
-    
+
     fn config(&self) -> &Self::Config {
         &self.config
     }
-    
+
     fn set_config(&mut self, config: Self::Config) -> crate::Result<()> {
         // Validate the new config
         Self::validate_config(&config)?;
-        
+
         // Note: Changing config at runtime would require recreating the semaphore
         // and restarting the worker loop. For now, we just update the stored config.
         self.config = config;
         Ok(())
     }
-    
+
     fn validate_config(config: &Self::Config) -> crate::Result<()> {
         if config.max_concurrent_tasks == 0 {
             return Err("max_concurrent_tasks must be greater than 0".into());
@@ -360,7 +354,11 @@ pub fn estimate_duration_from_data_size(data_size: usize, base_ms: u64) -> std::
     std::time::Duration::from_millis(base_ms + data_factor as u64)
 }
 
-pub fn estimate_duration_from_item_count(item_count: usize, base_ms: u64, per_item_ms: u64) -> std::time::Duration {
+pub fn estimate_duration_from_item_count(
+    item_count: usize,
+    base_ms: u64,
+    per_item_ms: u64,
+) -> std::time::Duration {
     let item_factor = (item_count / 100).max(1) as u64; // Base unit of 100 items
     std::time::Duration::from_millis(base_ms + (item_factor * per_item_ms).min(1000))
 }
@@ -382,13 +380,13 @@ impl AsyncExecutor {
                 .await
                 .map_err(|e| crate::Error::Plugin(format!("Task execution failed: {}", e)))?
         }
-        
+
         #[cfg(not(feature = "tokio-runtime"))]
         {
             task()
         }
     }
-    
+
     /// Execute a CPU-intensive task that returns a boxed result
     /// This is the common pattern used by background tasks
     pub async fn execute_blocking_boxed<F, R>(task: F) -> Result<Box<dyn std::any::Any + Send>>

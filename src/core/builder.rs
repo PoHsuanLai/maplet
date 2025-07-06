@@ -5,16 +5,15 @@
 
 use crate::{
     background::tasks::TaskManagerConfig,
-    layers::tile::TileSource,
     core::{
         config::{
-            InteractionAnimationConfig, MapPerformanceOptions, MapPerformanceProfile,
-            TileLoadingConfig, UnifiedMapConfig,
+            MapPerformanceOptions, MapPerformanceProfile, TileLoadingConfig, UnifiedMapConfig,
         },
         geo::{LatLng, Point},
         map::{Map, MapOptions},
         viewport::Viewport,
     },
+    layers::tile::TileSource,
     traits::ConfigPreset,
     Result,
 };
@@ -35,7 +34,6 @@ pub struct MapBuilder {
     zoom: f64,
     size: Point,
     tile_config: Option<TileLoadingConfig>,
-    animation_config: Option<InteractionAnimationConfig>,
     min_zoom: Option<f64>,
     max_zoom: Option<f64>,
 }
@@ -53,7 +51,6 @@ impl MapBuilder {
             zoom: 0.0,
             size: Point::default(),
             tile_config: None,
-            animation_config: None,
             min_zoom: None,
             max_zoom: None,
         }
@@ -85,7 +82,7 @@ impl MapBuilder {
         self.performance = MapPerformanceProfile::Custom(options);
         self
     }
-    
+
     /// Apply a unified configuration preset that affects all subsystems
     pub fn with_unified_config(mut self, config: UnifiedMapConfig) -> Self {
         self.performance = MapPerformanceProfile::Custom(config.performance);
@@ -105,7 +102,7 @@ impl MapBuilder {
         // Note: UI controls would be applied when creating the UI widget
         self
     }
-    
+
     /// Apply a configuration preset using the unified system
     pub fn with_config_preset(self, preset: ConfigPreset<UnifiedMapConfig>) -> Self {
         let config = preset.resolve();
@@ -192,12 +189,6 @@ impl MapBuilder {
         self
     }
 
-    /// Configure animation behavior
-    pub fn with_animation_config(mut self, config: InteractionAnimationConfig) -> Self {
-        self.animation_config = Some(config);
-        self
-    }
-
     /// Enable advanced tile prefetching
     pub fn with_tile_prefetching(mut self, buffer_size: u32, preload_zoom_tiles: bool) -> Self {
         let mut config = self.tile_config.unwrap_or_default();
@@ -230,62 +221,6 @@ impl MapBuilder {
         self
     }
 
-    /// Configure zoom animation behavior
-    pub fn with_zoom_animation(
-        mut self,
-        duration_ms: u64,
-        zoom_to_cursor: bool,
-        smooth_wheel: bool,
-    ) -> Self {
-        let mut config = self.animation_config.unwrap_or_default();
-        config.zoom_duration_ms = duration_ms;
-        config.zoom_to_cursor = zoom_to_cursor;
-        config.smooth_wheel_zoom = smooth_wheel;
-        self.animation_config = Some(config);
-        self
-    }
-
-    /// Enable transform-based animations for better performance
-    pub fn with_transform_animations(mut self, enabled: bool) -> Self {
-        let mut config = self.animation_config.unwrap_or_default();
-        config.use_transform_animations = enabled;
-        self.animation_config = Some(config);
-        self
-    }
-
-    /// Enable spacecraft-style zoom animations with dramatic effects
-    pub fn with_spacecraft_zoom(mut self) -> Self {
-        let mut config = self.animation_config.unwrap_or_default();
-        config.zoom_duration_ms = 600;
-        config.zoom_easing = crate::layers::animation::EasingType::SpacecraftZoom;
-        config.zoom_animation_threshold = 6.0; // Allow larger zoom differences
-        self.animation_config = Some(config);
-        self
-    }
-
-    /// Enable dynamic zoom animations with slight overshoot
-    pub fn with_dynamic_zoom(mut self) -> Self {
-        let mut config = self.animation_config.unwrap_or_default();
-        config.zoom_duration_ms = 400;
-        config.zoom_easing = crate::layers::animation::EasingType::DynamicZoom;
-        config.zoom_animation_threshold = 5.0;
-        self.animation_config = Some(config);
-        self
-    }
-
-    /// Set custom zoom animation easing and duration
-    pub fn with_zoom_easing(
-        mut self,
-        easing: crate::layers::animation::EasingType,
-        duration_ms: u64,
-    ) -> Self {
-        let mut config = self.animation_config.unwrap_or_default();
-        config.zoom_easing = easing;
-        config.zoom_duration_ms = duration_ms;
-        self.animation_config = Some(config);
-        self
-    }
-
     /// Build the map with the configured options
     pub fn build(self) -> Result<Map> {
         // Ensure we have a viewport
@@ -314,18 +249,11 @@ impl MapBuilder {
             task_config.clone(),
         )?;
 
-        // Apply animation configuration if provided
-        if let Some(animation_config) = &self.animation_config {
-            let duration = std::time::Duration::from_millis(animation_config.zoom_duration_ms);
-            map.set_zoom_animation_style(animation_config.zoom_easing, duration);
-            map.set_zoom_animation_threshold(animation_config.zoom_animation_threshold as f64);
-            map.set_zoom_animation_enabled(animation_config.enable_transitions);
-        }
-
         // Add tile source if provided
         if let Some(_tile_source) = self.tile_source {
             // Create a high-performance tile layer with background task manager
-            let bg_task_manager = std::sync::Arc::new(crate::background::BackgroundTaskManager::new(task_config));
+            let bg_task_manager =
+                std::sync::Arc::new(crate::background::BackgroundTaskManager::new(task_config));
             let tile_layer = crate::layers::tile::TileLayer::new_with_high_performance(
                 "base_tiles".to_string(),
                 "Base Map Tiles".to_string(),
@@ -416,9 +344,6 @@ impl MapBuilder {
             .with_tile_prefetching(3, true)
             .with_tile_retries(5, 1000, true)
             .with_parent_tile_fallbacks(true)
-            .with_zoom_animation(350, true, true)
-            .with_transform_animations(true)
-            .with_dynamic_zoom() // Use dynamic zoom for high quality
     }
 
     /// Create a map optimized for performance on slower devices
@@ -428,8 +353,6 @@ impl MapBuilder {
             .with_tile_prefetching(1, false)
             .with_tile_retries(2, 250, false)
             .with_parent_tile_fallbacks(false)
-            .with_zoom_animation(200, true, false)
-            .with_transform_animations(true)
     }
 
     /// Create a map with balanced settings for most use cases
@@ -439,30 +362,6 @@ impl MapBuilder {
             .with_tile_prefetching(2, true)
             .with_tile_retries(3, 500, true)
             .with_parent_tile_fallbacks(true)
-            .with_zoom_animation(350, true, true)
-            .with_transform_animations(true)
-    }
-
-    /// Create a map with spacecraft-style zoom animations for dramatic effect
-    pub fn spacecraft_map(center: LatLng, zoom: f64, size: Point) -> Self {
-        Self::new()
-            .with_center_and_zoom(center, zoom, size)
-            .with_tile_prefetching(2, true)
-            .with_tile_retries(3, 500, true)
-            .with_parent_tile_fallbacks(true)
-            .with_spacecraft_zoom()
-            .with_transform_animations(true)
-    }
-
-    /// Create a map with dynamic zoom animations with slight overshoot
-    pub fn dynamic_map(center: LatLng, zoom: f64, size: Point) -> Self {
-        Self::new()
-            .with_center_and_zoom(center, zoom, size)
-            .with_tile_prefetching(2, true)
-            .with_tile_retries(3, 500, true)
-            .with_parent_tile_fallbacks(true)
-            .with_dynamic_zoom()
-            .with_transform_animations(true)
     }
 }
 
@@ -566,18 +465,6 @@ mod tests {
                 error_tile_url: None,
                 show_parent_tiles: true,
                 preload_zoom_tiles: true,
-            },
-            animation: InteractionAnimationConfig {
-                enable_transitions: true,
-                pan_easing: crate::layers::animation::EasingType::Linear,
-                zoom_easing: crate::layers::animation::EasingType::Linear,
-                max_zoom_step_per_frame: 0.2,
-                zoom_animation_threshold: 0.05,
-                zoom_duration_ms: 350,
-                pan_duration_ms: 300,
-                zoom_to_cursor: true,
-                use_transform_animations: true,
-                smooth_wheel_zoom: true,
             },
             rendering: GpuRenderingConfig {
                 msaa_samples: 2,

@@ -72,13 +72,13 @@ pub use core::{
     bounds::Bounds,
     builder::MapBuilder,
     config::{
-        FrameTimingConfig, GpuRenderingConfig, InteractionAnimationConfig, MapPerformanceOptions,
-        MapPerformanceProfile, TextureFilterMode, TileLoadingConfig,
+        FrameTimingConfig, GpuRenderingConfig, MapPerformanceOptions, MapPerformanceProfile,
+        TextureFilterMode, TileLoadingConfig,
     },
     geo::{LatLng, LatLngBounds, Point, TileCoord},
     map::{Map as CoreMap, MapOptions},
-    viewport::Viewport,
     viewport::Transform,
+    viewport::Viewport,
 };
 
 pub use layers::{
@@ -90,8 +90,8 @@ pub use input::{events::InputEvent, handler::InputHandler};
 
 #[cfg(feature = "egui")]
 pub use ui::{
-    controls::ControlManager, 
-    popup::Popup, 
+    controls::ControlManager,
+    popup::Popup,
     widget::{Map, MapTheme, MapWidgetExt},
     UiMapExt,
 };
@@ -104,7 +104,7 @@ pub use rendering::{context::RenderContext, pipeline::RenderPipeline};
 
 pub use spatial::{clustering::Clustering, index::SpatialIndex};
 
-pub use layers::animation::{AnimationManager, EasingType};
+pub use layers::animation::AnimationManager;
 pub use traits::Lerp;
 
 pub use data::{formats::DataFormat, geojson::GeoJsonLayer};

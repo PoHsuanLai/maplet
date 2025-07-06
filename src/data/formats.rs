@@ -91,10 +91,11 @@ impl DataProcessor {
         match detected_format {
             DataFormat::GeoJSON => {
                 // Use the comprehensive GeoJSON implementation
-                let geojson_layer = std::str::FromStr::from_str(data)
-                    .map_err(|e| ParseError::InvalidFormat(format!("GeoJSON parse error: {}", e)))?;
+                let geojson_layer = std::str::FromStr::from_str(data).map_err(|e| {
+                    ParseError::InvalidFormat(format!("GeoJSON parse error: {}", e))
+                })?;
                 Self::convert_from_geojson_layer(&geojson_layer)
-            },
+            }
             DataFormat::KML => Self::parse_kml(data),
             DataFormat::GPX => Self::parse_gpx(data),
             DataFormat::CSV => Self::parse_csv(data),
@@ -111,7 +112,7 @@ impl DataProcessor {
                 let _geojson_layer = Self::convert_to_geojson_layer(features)?;
                 // Convert to GeoJSON string - we'll need to add this method
                 Err(ParseError::UnsupportedFormat(DataFormat::GeoJSON)) // Temporary until we implement this
-            },
+            }
             DataFormat::KML => Self::export_kml(features),
             DataFormat::GPX => Self::export_gpx(features),
             DataFormat::CSV => Self::export_csv(features),
@@ -124,11 +125,11 @@ impl DataProcessor {
     fn convert_from_geojson_layer(layer: &GeoJsonLayer) -> Result<FeatureCollection, ParseError> {
         let features = layer.features();
         let mut converted_features = Vec::new();
-        
+
         for geojson_feature in features {
             converted_features.push(Self::convert_geojson_feature_to_generic(geojson_feature));
         }
-        
+
         let bbox = layer.bounds();
         Ok(FeatureCollection {
             features: converted_features,
@@ -136,7 +137,7 @@ impl DataProcessor {
         })
     }
 
-    // Convert our generic FeatureCollection to GeoJsonLayer  
+    // Convert our generic FeatureCollection to GeoJsonLayer
     fn convert_to_geojson_layer(_features: &FeatureCollection) -> Result<GeoJsonLayer, ParseError> {
         // We'll implement this conversion later
         Err(ParseError::UnsupportedFormat(DataFormat::GeoJSON))
@@ -146,7 +147,10 @@ impl DataProcessor {
     fn convert_geojson_feature_to_generic(geojson_feature: &GeoJsonFeature) -> Feature {
         Feature {
             id: geojson_feature.id.as_ref().map(|v| v.to_string()),
-            geometry: geojson_feature.geometry.as_ref().map(Self::convert_geojson_geometry_to_generic),
+            geometry: geojson_feature
+                .geometry
+                .as_ref()
+                .map(Self::convert_geojson_geometry_to_generic),
             properties: geojson_feature.properties.clone().unwrap_or_default(),
         }
     }
@@ -156,35 +160,47 @@ impl DataProcessor {
         match geom {
             GeoJsonGeometry::Point { coordinates } => {
                 Geometry::Point(LatLng::new(coordinates[1], coordinates[0]))
-            },
+            }
             GeoJsonGeometry::LineString { coordinates } => {
-                let points = coordinates.iter().map(|c| LatLng::new(c[1], c[0])).collect();
+                let points = coordinates
+                    .iter()
+                    .map(|c| LatLng::new(c[1], c[0]))
+                    .collect();
                 Geometry::LineString(points)
-            },
+            }
             GeoJsonGeometry::Polygon { coordinates } => {
-                let rings = coordinates.iter().map(|ring| {
-                    ring.iter().map(|c| LatLng::new(c[1], c[0])).collect()
-                }).collect();
+                let rings = coordinates
+                    .iter()
+                    .map(|ring| ring.iter().map(|c| LatLng::new(c[1], c[0])).collect())
+                    .collect();
                 Geometry::Polygon(rings)
-            },
+            }
             GeoJsonGeometry::MultiPoint { coordinates } => {
-                let points = coordinates.iter().map(|c| LatLng::new(c[1], c[0])).collect();
+                let points = coordinates
+                    .iter()
+                    .map(|c| LatLng::new(c[1], c[0]))
+                    .collect();
                 Geometry::MultiPoint(points)
-            },
+            }
             GeoJsonGeometry::MultiLineString { coordinates } => {
-                let lines = coordinates.iter().map(|line| {
-                    line.iter().map(|c| LatLng::new(c[1], c[0])).collect()
-                }).collect();
+                let lines = coordinates
+                    .iter()
+                    .map(|line| line.iter().map(|c| LatLng::new(c[1], c[0])).collect())
+                    .collect();
                 Geometry::MultiLineString(lines)
-            },
+            }
             GeoJsonGeometry::MultiPolygon { coordinates } => {
-                let polygons = coordinates.iter().map(|polygon| {
-                    polygon.iter().map(|ring| {
-                        ring.iter().map(|c| LatLng::new(c[1], c[0])).collect()
-                    }).collect()
-                }).collect();
+                let polygons = coordinates
+                    .iter()
+                    .map(|polygon| {
+                        polygon
+                            .iter()
+                            .map(|ring| ring.iter().map(|c| LatLng::new(c[1], c[0])).collect())
+                            .collect()
+                    })
+                    .collect();
                 Geometry::MultiPolygon(polygons)
-            },
+            }
             GeoJsonGeometry::GeometryCollection { geometries } => {
                 // For simplicity, just use the first geometry if available
                 if let Some(first_geom) = geometries.first() {
@@ -483,13 +499,22 @@ mod tests {
     #[test]
     fn test_format_detection() {
         let geojson_data = r#"{"type": "FeatureCollection", "features": []}"#;
-        assert_eq!(DataProcessor::detect_format(geojson_data), Some(DataFormat::GeoJSON));
+        assert_eq!(
+            DataProcessor::detect_format(geojson_data),
+            Some(DataFormat::GeoJSON)
+        );
 
         let kml_data = r#"<?xml version="1.0" encoding="UTF-8"?><kml><Document></Document></kml>"#;
-        assert_eq!(DataProcessor::detect_format(kml_data), Some(DataFormat::KML));
+        assert_eq!(
+            DataProcessor::detect_format(kml_data),
+            Some(DataFormat::KML)
+        );
 
         let csv_data = "lat,lng,name\n40.7128,-74.0060,New York";
-        assert_eq!(DataProcessor::detect_format(csv_data), Some(DataFormat::CSV));
+        assert_eq!(
+            DataProcessor::detect_format(csv_data),
+            Some(DataFormat::CSV)
+        );
     }
 
     #[test]

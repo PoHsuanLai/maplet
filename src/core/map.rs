@@ -2,7 +2,7 @@ use crate::{
     background::{tasks::TaskManagerConfig, BackgroundTaskManager},
     core::{config::MapPerformanceOptions, geo::LatLng, viewport::Viewport},
     input::{Action, EventManager, InputEvent, InputHandler, MapEvent, MapOperations},
-    layers::{base::LayerTrait, manager::LayerManager, animation::AnimationManager},
+    layers::{animation::AnimationManager, base::LayerTrait, manager::LayerManager},
     plugins::base::PluginTrait,
     prelude::HashMap,
     traits::PointMath,
@@ -44,15 +44,71 @@ impl Default for MapOptions {
     }
 }
 
-/// Centralized update orchestrator that eliminates flickering
-/// by being the single source of truth for all timing decisions
+/// Efficient update reason flags using bit operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateReasons {
+    flags: u16,
+}
+
+impl Default for UpdateReasons {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UpdateReasons {
+    const USER_INPUT: u16 = 1 << 0;
+    const ANIMATION_STARTED: u16 = 1 << 1;
+    const CONTENT_READY: u16 = 1 << 2;
+    const DRAG_START: u16 = 1 << 3;
+    const DRAG_PAN: u16 = 1 << 4;
+    const DRAG_END: u16 = 1 << 5;
+
+    pub fn new() -> Self {
+        Self { flags: 0 }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.flags == 0
+    }
+
+    pub fn clear(&mut self) {
+        self.flags = 0;
+    }
+
+    pub fn set_user_input(&mut self) {
+        self.flags |= Self::USER_INPUT;
+    }
+
+    pub fn set_animation_started(&mut self) {
+        self.flags |= Self::ANIMATION_STARTED;
+    }
+
+    pub fn set_content_ready(&mut self) {
+        self.flags |= Self::CONTENT_READY;
+    }
+
+    pub fn set_drag_start(&mut self) {
+        self.flags |= Self::DRAG_START;
+    }
+
+    pub fn set_drag_pan(&mut self) {
+        self.flags |= Self::DRAG_PAN;
+    }
+
+    pub fn set_drag_end(&mut self) {
+        self.flags |= Self::DRAG_END;
+    }
+}
+
+/// Centralized update orchestrator for all timing decisions
 #[derive(Debug, Clone)]
 pub struct UpdateOrchestrator {
     last_frame_time: std::time::Instant,
     frame_count: u64,
     target_fps: u32,
     min_frame_interval_ms: u64,
-    force_update_reasons: Vec<String>,
+    force_update_reasons: UpdateReasons,
     animation_active: bool,
     background_work_pending: bool,
     viewport_changed: bool,
@@ -68,7 +124,7 @@ impl UpdateOrchestrator {
             frame_count: 0,
             target_fps,
             min_frame_interval_ms: 1000 / target_fps as u64,
-            force_update_reasons: Vec::new(),
+            force_update_reasons: UpdateReasons::new(),
             animation_active: false,
             background_work_pending: false,
             viewport_changed: false,
@@ -80,50 +136,45 @@ impl UpdateOrchestrator {
 
     /// The ONLY method that decides whether to update/render
     /// This is purely functional - no side effects
-    pub fn should_update_and_render(&mut self) -> (bool, Vec<String>) {
+    pub fn should_update_and_render(&mut self) -> bool {
         let now = std::time::Instant::now();
         let elapsed_ms = now.duration_since(self.last_frame_time).as_millis() as u64;
-        
-        let mut reasons = Vec::new();
+
         let mut should_update = false;
 
         // Always render initially to show the map
         if !self.initial_render_done {
             should_update = true;
-            reasons.push("initial_render".to_string());
             self.initial_render_done = true;
         }
 
         // Always update if we have force reasons (animations, input, etc.)
         if !self.force_update_reasons.is_empty() {
             should_update = true;
-            reasons.append(&mut self.force_update_reasons);
+            // CRITICAL FIX: Clear reasons after checking
+            self.force_update_reasons.clear();
         }
 
         // Update if animations are active
         if self.animation_active {
             should_update = true;
-            reasons.push("animation_active".to_string());
         }
 
         // Update if viewport changed
         if self.viewport_changed {
             should_update = true;
-            reasons.push("viewport_changed".to_string());
             self.viewport_changed = false;
         }
 
         // Update if layers need work
         if self.layers_need_update {
             should_update = true;
-            reasons.push("layers_need_update".to_string());
             self.layers_need_update = false;
         }
 
         // Update if background work completed
         if self.background_work_pending {
             should_update = true;
-            reasons.push("background_work_completed".to_string());
             self.background_work_pending = false;
         }
 
@@ -131,22 +182,19 @@ impl UpdateOrchestrator {
         // This prevents the map from disappearing when nothing is happening
         if elapsed_ms >= self.min_frame_interval_ms && self.idle_render_count < 10 {
             should_update = true;
-            reasons.push("periodic_render".to_string());
             self.idle_render_count += 1;
         }
 
         // Always render if enough time has passed (ensures map stays visible)
         if elapsed_ms >= self.min_frame_interval_ms * 2 {
             should_update = true;
-            reasons.push("maintain_visibility".to_string());
             self.idle_render_count = 0; // Reset idle counter
         }
 
         // Throttle updates to target FPS unless forced, but be more permissive
-        if should_update && elapsed_ms < (self.min_frame_interval_ms / 2) && reasons.len() == 1 && reasons[0] == "background_work_completed" {
+        if should_update && elapsed_ms < (self.min_frame_interval_ms / 2) {
             // Only throttle rapid background work updates
             should_update = false;
-            reasons.clear();
         }
 
         // Update frame timing if we're actually updating
@@ -155,15 +203,14 @@ impl UpdateOrchestrator {
             self.frame_count += 1;
         }
 
-        (should_update, reasons)
+        should_update
     }
 
-    // Functional setters - no side effects except state updates
     pub fn mark_animation_active(&mut self, active: bool) {
         if active != self.animation_active {
             self.animation_active = active;
             if active {
-                self.force_update_reasons.push("animation_started".to_string());
+                self.force_update_reasons.set_animation_started();
             }
         }
     }
@@ -180,13 +227,25 @@ impl UpdateOrchestrator {
         self.background_work_pending = true;
     }
 
-    pub fn force_update(&mut self, reason: String) {
-        self.force_update_reasons.push(reason);
+    pub fn force_update_user_input(&mut self) {
+        self.force_update_reasons.set_user_input();
+    }
+
+    pub fn force_update_drag_start(&mut self) {
+        self.force_update_reasons.set_drag_start();
+    }
+
+    pub fn force_update_drag_pan(&mut self) {
+        self.force_update_reasons.set_drag_pan();
+    }
+
+    pub fn force_update_drag_end(&mut self) {
+        self.force_update_reasons.set_drag_end();
     }
 
     pub fn mark_content_ready(&mut self) {
         self.layers_need_update = true;
-        self.force_update_reasons.push("content_ready".to_string());
+        self.force_update_reasons.set_content_ready();
     }
 
     pub fn reset_idle_state(&mut self) {
@@ -300,7 +359,7 @@ impl Map {
         if self.viewport.center != old_center || self.viewport.zoom != old_zoom {
             // Mark viewport change in orchestrator
             self.update_orchestrator.mark_viewport_changed();
-            
+
             self.event_manager.emit(MapEvent::ViewChanged {
                 center: self.viewport.center,
                 zoom: self.viewport.zoom,
@@ -342,17 +401,16 @@ impl Map {
             old_center
         };
 
-        if self.animation_manager.try_animate_zoom(
+        if self.animation_manager.start_smooth_zoom(
             old_center,
             new_center,
             old_zoom,
             zoom,
             focus_point,
-            None,
         ) {
             // Mark animation as active in the orchestrator
             self.update_orchestrator.mark_animation_active(true);
-            
+
             self.event_manager
                 .emit(MapEvent::ZoomStart { zoom: old_zoom });
             return Ok(());
@@ -450,31 +508,73 @@ impl Map {
                 .handle_event(input, self.viewport.center, self.viewport.zoom);
 
         if !actions.is_empty() {
-            // Mark input activity in orchestrator
-            self.update_orchestrator.force_update("user_input".to_string());
+            self.update_orchestrator.force_update_user_input();
         }
 
         for action in actions {
             match &action {
-                Action::Zoom { level, focus_point, animate: true, .. } => {
-                    // Use the map's zoom_to method to trigger animations
+                Action::StartDrag => {
+                    // Start dragging mode - mark for continuous updates like Leaflet
+                    MapOperations::execute_action(&mut self.viewport, action.clone())?;
+                    self.update_orchestrator.force_update_drag_start();
+
+                    // Immediately trigger layer updates to load tiles at drag start position
+                    self.update_orchestrator.mark_layers_need_update();
+                }
+                Action::Pan {
+                    delta: _,
+                    animate: false,
+                    ..
+                } => {
+                    // During drag - pan using map pane position and trigger immediate update
+                    MapOperations::execute_action(&mut self.viewport, action.clone())?;
+
+                    self.update_orchestrator.force_update_drag_pan();
+                    self.update_orchestrator.mark_layers_need_update();
+                    self.update_orchestrator.mark_viewport_changed();
+
+                    self.layer_manager.for_each_layer_mut(|layer| {
+                        if let Some(tile_layer) = layer
+                            .as_any_mut()
+                            .downcast_mut::<crate::layers::tile::TileLayer>()
+                        {
+                            let _ = tile_layer.update_tiles(&self.viewport);
+                        }
+                    });
+                }
+                Action::EndDrag => {
+                    // End dragging mode - final update
+                    MapOperations::execute_action(&mut self.viewport, action.clone())?;
+
+                    self.update_orchestrator.mark_viewport_changed();
+                    self.update_orchestrator.force_update_drag_end();
+                }
+                Action::Zoom {
+                    level,
+                    focus_point,
+                    animate: true,
+                    ..
+                } => {
                     self.zoom_to(*level, *focus_point)?;
                 }
-                Action::Zoom { level, focus_point, animate: false, .. } => {
-                    // Direct zoom without animation
+                Action::Zoom {
+                    level,
+                    focus_point,
+                    animate: false,
+                    ..
+                } => {
                     MapOperations::zoom_to(&mut self.viewport, *level, *focus_point)?;
                     self.update_orchestrator.mark_viewport_changed();
                 }
                 Action::PanInertia { .. } => {
                     self.input_handler.start_animation(
-                        action,
+                        action.clone(),
                         self.viewport.center,
                         self.viewport.zoom,
                     );
                 }
                 _ => {
-                    MapOperations::execute_action(&mut self.viewport, action)?;
-                    // Mark viewport change for immediate actions
+                    MapOperations::execute_action(&mut self.viewport, action.clone())?;
                     self.update_orchestrator.mark_viewport_changed();
                 }
             }
@@ -489,116 +589,122 @@ impl Map {
         &mut self,
         render_context: &mut crate::rendering::context::RenderContext,
     ) -> Result<bool> {
-        // Check for background task results and mark if work is pending
         if self.background_tasks.has_pending_results() {
             self.update_orchestrator.mark_background_work_pending();
         }
 
-        // Update animations and mark if active
         if let Some(animation_state) = self.animation_manager.update() {
-            self.update_orchestrator.mark_animation_active(animation_state.progress < 1.0);
-            
-            // Apply the animation's transform to the viewport for visual effect
+            self.update_orchestrator
+                .mark_animation_active(animation_state.progress < 1.0);
+
             self.viewport.set_transform(animation_state.transform);
-            
-            // Update center and zoom during animation (smooth interpolation)
+
             if animation_state.progress < 1.0 {
-                // During animation, use interpolated values but don't update actual viewport zoom/center until complete
-                // This creates the smooth visual effect while keeping tile loading stable
+                let temp_center = self.viewport.center;
+                let temp_zoom = self.viewport.zoom;
+
+                self.viewport.center = animation_state.center;
+                self.viewport.zoom = animation_state.zoom;
+
+                self.layer_manager.for_each_layer_mut(|layer| {
+                    if let Some(tile_layer) = layer
+                        .as_any_mut()
+                        .downcast_mut::<crate::layers::tile::TileLayer>()
+                    {
+                        let _ = tile_layer.update_tiles(&self.viewport);
+                    }
+                });
+
+                self.viewport.center = temp_center;
+                self.viewport.zoom = temp_zoom;
+
+                self.update_orchestrator.mark_layers_need_update();
             } else {
-                // Animation complete - apply final values and clear transform
                 self.viewport.center = animation_state.center;
                 self.viewport.zoom = animation_state.zoom;
                 self.viewport.clear_transform();
-                
-                // Emit zoom end event
-                self.event_manager.emit(MapEvent::ZoomEnd { 
-                    zoom: animation_state.zoom 
+
+                self.layer_manager.for_each_layer_mut(|layer| {
+                    if let Some(tile_layer) = layer
+                        .as_any_mut()
+                        .downcast_mut::<crate::layers::tile::TileLayer>()
+                    {
+                        let _ = tile_layer.update_tiles(&self.viewport);
+                    }
+                });
+
+                self.event_manager.emit(MapEvent::ZoomEnd {
+                    zoom: animation_state.zoom,
                 });
             }
         } else {
             self.update_orchestrator.mark_animation_active(false);
-            // Ensure transform is cleared when no animation is active
             if self.viewport.has_active_transform() {
                 self.viewport.clear_transform();
             }
         }
 
-        // Process input animations
         if let Some((center, zoom)) = self.input_handler.update_animation() {
             self.viewport.center = center;
             self.viewport.zoom = zoom;
             self.update_orchestrator.mark_viewport_changed();
         }
 
-        // Check if orchestrator decides to update/render
-        let (should_update, reasons) = self.update_orchestrator.should_update_and_render();
-        
-        // Be more permissive - always render if we have layers that need rendering
+        let should_update = self.update_orchestrator.should_update_and_render();
+
         let force_render = !self.layer_manager.is_empty();
-        
+
         if !should_update && !force_render {
             return Ok(false);
         }
 
-        // Process background task results
         let task_results = self.background_tasks.try_recv_results();
         if !task_results.is_empty() {
-            // Handle results and potentially trigger layer updates
             for _result in task_results {
                 self.update_orchestrator.mark_layers_need_update();
             }
         }
 
-        // Update layers and check for content changes
         let mut content_changed = false;
         self.layer_manager.for_each_layer_mut(|layer| {
             let _ = layer.update(0.016); // Fixed delta time since timing is controlled centrally
-            
-            // Check if tile layer has new content
-            if let Some(tile_layer) = layer.as_any().downcast_ref::<crate::layers::tile::TileLayer>() {
+
+            if let Some(tile_layer) = layer
+                .as_any()
+                .downcast_ref::<crate::layers::tile::TileLayer>()
+            {
                 if tile_layer.needs_repaint() {
                     content_changed = true;
                 }
             }
         });
 
-        // Notify orchestrator if content changed
         if content_changed {
             self.update_orchestrator.mark_content_ready();
         }
 
-        // Update plugins
         for (_, plugin) in self.plugins.iter_mut() {
             let _ = plugin.update(0.016);
         }
 
-        // Render everything
         render_context.begin_frame()?;
-        
-        // Set up viewport clipping bounds
+
         let viewport_bounds = (
             crate::core::geo::Point::new(0.0, 0.0),
             crate::core::geo::Point::new(self.viewport.size.x, self.viewport.size.y),
         );
         render_context.set_clip_bounds(viewport_bounds.0, viewport_bounds.1);
-        
+
         self.layer_manager.for_each_layer_mut(|layer| {
             let _ = layer.render(render_context, &self.viewport);
         });
-        
+
         for (_, plugin) in self.plugins.iter_mut() {
             let _ = plugin.render(render_context, &self.viewport);
         }
-        
+
         // Clear clipping after rendering
         render_context.clear_clip_bounds();
-
-        // Log update reasons for debugging
-        #[cfg(feature = "debug")]
-        if !reasons.is_empty() {
-            println!("🔄 [UPDATE] Reasons: {:?}", reasons);
-        }
 
         Ok(true)
     }
@@ -634,7 +740,7 @@ impl Map {
         if let Some(target_fps) = performance.framerate.target_fps {
             self.update_orchestrator = UpdateOrchestrator::new(target_fps);
         }
-        
+
         self.performance = performance;
     }
 
@@ -648,28 +754,8 @@ impl Map {
         }
     }
 
-
-
     pub fn stop_animations(&mut self) {
         self.animation_manager.stop_zoom_animation();
-        self.input_handler.stop_animation();
-    }
-
-    pub fn set_zoom_animation_enabled(&mut self, enabled: bool) {
-        self.animation_manager.set_zoom_animation_enabled(enabled);
-    }
-
-    pub fn set_zoom_animation_threshold(&mut self, threshold: f64) {
-        self.animation_manager
-            .set_zoom_animation_threshold(threshold);
-    }
-
-    pub fn set_zoom_animation_style(
-        &mut self,
-        easing: crate::layers::animation::EasingType,
-        duration: std::time::Duration,
-    ) {
-        self.animation_manager.set_zoom_style(easing, duration);
     }
 
     /// Get the update orchestrator for advanced configuration
@@ -749,7 +835,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_zoom_to() {
-        let mut map = Map::new(
+        let mut map = Map::for_testing(
             LatLng::new(37.7749, -122.4194),
             10.0,
             crate::core::geo::Point::new(800.0, 600.0),
@@ -758,6 +844,21 @@ mod tests {
         let new_zoom = 15.0;
         let result = map.zoom_to(new_zoom, None);
         assert!(result.is_ok());
+
+        // Since zoom animations are enabled, we need to process the animation
+        // In a real application, this would be done in the render loop
+        if map.animation_manager.is_animating() {
+            // Complete the animation by updating until it's finished
+            while let Some(state) = map.animation_manager.update() {
+                if state.progress >= 1.0 {
+                    map.viewport.center = state.center;
+                    map.viewport.zoom = state.zoom;
+                    map.viewport.clear_transform();
+                    break;
+                }
+            }
+        }
+
         assert_eq!(map.viewport.zoom, new_zoom);
     }
 
@@ -784,15 +885,8 @@ mod tests {
             crate::core::geo::Point::new(800.0, 600.0),
         );
 
-        map.set_zoom_animation_enabled(false);
-        map.set_zoom_animation_enabled(true);
-
-        map.set_zoom_animation_threshold(0.5);
-
         map.stop_animations();
     }
-
-
 
     #[tokio::test]
     async fn test_viewport_access() {
