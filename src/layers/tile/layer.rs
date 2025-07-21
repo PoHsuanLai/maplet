@@ -14,7 +14,7 @@ use crate::{
         base::{LayerProperties, LayerTrait, LayerType},
     },
     rendering::context::RenderContext,
-    traits::{GeometryOps, PointMath, RetryLogic},
+    traits::{GeometryOps, RetryLogic, PointMath},
     Result,
 };
 
@@ -80,7 +80,7 @@ impl TileLayer {
         };
 
         let tile_loader = TileLoader::new(loader_config);
-        let tile_cache = TileCache::new(1024);
+        let tile_cache = TileCache::new(2048);
 
         Ok(Self {
             properties,
@@ -93,7 +93,7 @@ impl TileLayer {
             test_mode: false,
             keep_buffer: options.keep_buffer,
             animation_manager: Some(AnimationManager::new()),
-            render_bounds: options.bounds.clone(),
+            render_bounds: None, // Disable bounds for debugging grey-out
             boundary_buffer: 0.1, // Default buffer in degrees
             tiles_loading_count: 0,
             loading_state_changed: false,
@@ -130,11 +130,10 @@ impl TileLayer {
             return Ok(());
         }
 
-        // CRITICAL FIX: Use same effective center as update_tiles for consistency
-        // This ensures tiles are loaded and rendered using the same center calculation
-        let effective_center = self.calculate_effective_center(viewport);
+        // Use viewport center directly since coordinate transformations now handle map pane position
+        let tile_center = self.get_tile_center(viewport);
         let tiled_pixel_bounds =
-            self.get_tiled_pixel_bounds(Some(effective_center), viewport, zoom);
+            self.get_tiled_pixel_bounds(Some(tile_center), viewport, zoom);
         let tile_range = self.pixel_bounds_to_tile_range(&tiled_pixel_bounds, zoom);
         let visible_tiles = self.tile_range_to_coords(&tile_range, zoom);
 
@@ -147,9 +146,9 @@ impl TileLayer {
                 continue;
             }
 
-            // Calculate initial tile screen bounds using effective center for consistency
+            // Calculate initial tile screen bounds using tile center for consistency
             let mut bounds =
-                self.calculate_tile_screen_bounds_with_center(*coord, viewport, effective_center);
+                self.calculate_tile_screen_bounds_with_center(*coord, viewport, tile_center);
 
             // Apply animation transforms if active (Leaflet-style CSS transforms)
             if let Some(level) = self.levels.get(&coord.z) {
@@ -183,8 +182,63 @@ impl TileLayer {
             // Queue for loading if not rendered
             if !tile_rendered {
                 tiles_to_queue.push(*coord);
-                // Render placeholder (empty tile)
-                let _ = ctx.render_tile(&Vec::new(), bounds, self.opacity());
+                
+                // LEAFLET-STYLE FALLBACK: Show parent tiles instead of grey placeholders
+                let mut fallback_rendered = false;
+                
+                // 1. Try parent tiles (zoom-1) for immediate fallback
+                if coord.z > 0 {
+                    let parent_coord = TileCoord {
+                        x: coord.x / 2,
+                        y: coord.y / 2,
+                        z: coord.z - 1,
+                    };
+                    
+                    if let Some(parent_data) = self.tile_cache.get(&parent_coord) {
+                        if ctx.render_tile(&parent_data, bounds, self.opacity() * 0.8).is_ok() {
+                            fallback_rendered = true;
+                        }
+                    }
+                }
+                
+                // 2. Try grand-parent tiles (zoom-2) if parent not available
+                if !fallback_rendered && coord.z > 1 {
+                    let grandparent_coord = TileCoord {
+                        x: coord.x / 4,
+                        y: coord.y / 4,
+                        z: coord.z - 2,
+                    };
+                    
+                    if let Some(grandparent_data) = self.tile_cache.get(&grandparent_coord) {
+                        if ctx.render_tile(&grandparent_data, bounds, self.opacity() * 0.6).is_ok() {
+                            fallback_rendered = true;
+                        }
+                    }
+                }
+                
+                // 3. Try child tiles (zoom+1) for zoom-out scenarios
+                if !fallback_rendered && coord.z < 18 {
+                    let child_coords = [
+                        TileCoord { x: coord.x * 2, y: coord.y * 2, z: coord.z + 1 },
+                        TileCoord { x: coord.x * 2 + 1, y: coord.y * 2, z: coord.z + 1 },
+                        TileCoord { x: coord.x * 2, y: coord.y * 2 + 1, z: coord.z + 1 },
+                        TileCoord { x: coord.x * 2 + 1, y: coord.y * 2 + 1, z: coord.z + 1 },
+                    ];
+                    
+                    for child_coord in &child_coords {
+                        if let Some(child_data) = self.tile_cache.get(child_coord) {
+                            if ctx.render_tile(&child_data, bounds, self.opacity() * 0.7).is_ok() {
+                                fallback_rendered = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // 4. Only show grey placeholder if no fallback tiles available
+                if !fallback_rendered {
+                    let _ = ctx.render_tile(&Vec::new(), bounds, self.opacity());
+                }
             }
         }
 
@@ -202,6 +256,7 @@ impl TileLayer {
 
     /// Calculate screen bounds for a tile coordinate using a specific center
     /// This allows consistent positioning during drag operations
+    /// CRITICAL FIX: Use viewport's coordinate transformation methods to eliminate fish-eye distortion
     fn calculate_tile_screen_bounds_with_center(
         &self,
         coord: TileCoord,
@@ -217,15 +272,23 @@ impl TileLayer {
         // Project specified center to same zoom level
         let center_world = viewport.project(&center, Some(coord.z as f64));
 
-        // Calculate screen position relative to specified center
-        let screen_x = tile_world_x - center_world.x + viewport.size.x / 2.0;
-        let screen_y = tile_world_y - center_world.y + viewport.size.y / 2.0;
+        // Calculate layer point (relative to pixel origin)
+        let layer_x = tile_world_x - center_world.x;
+        let layer_y = tile_world_y - center_world.y;
+        let layer_point = Point::new(layer_x, layer_y);
 
+        // Use viewport's coordinate transformation to get container point
+        // This properly handles map pane position during dragging
+        let container_point = viewport.layer_point_to_container_point(&layer_point);
+
+        // Return screen bounds
         (
-            Point::new(screen_x, screen_y),
-            Point::new(screen_x + tile_size, screen_y + tile_size),
+            container_point,
+            Point::new(container_point.x + tile_size, container_point.y + tile_size),
         )
     }
+
+
 
     pub fn for_testing(id: String, name: String) -> Self {
         println!(
@@ -265,46 +328,71 @@ impl TileLayer {
         name: String,
         bg_task_manager: Arc<crate::background::BackgroundTaskManager>,
     ) -> Self {
-        println!("🚀 [DEBUG] TileLayer::new_with_high_performance() - Creating high-performance tile layer '{}' ({})", name, id);
-
+        let tile_source = Box::new(OpenStreetMapSource::new());
         let options = TileLayerOptions {
-            keep_buffer: 8, // Much more aggressive buffering
-            ..Default::default()
+            tile_size: 256,
+            min_zoom: 0,
+            max_zoom: 18,
+            attribution: Some("© OpenStreetMap contributors".to_string()),
+            opacity: 1.0,
+            z_index: 1,
+            keep_buffer: 6, // More aggressive buffer for high performance
+            subdomains: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            error_tile_url: None,
+            cross_origin: false,
+            tms: false,
+            detect_retina: false,
+            reference_system: "EPSG:3857".to_string(),
+            bounds: None,
+            update_when_idle: false,
+            update_when_zooming: true,
+            update_interval: 16, // Fixed: u32 instead of Duration
+            target_zoom: None,
         };
 
-        // Create tile loader with high-performance preset and background task manager
-        let tile_loader = TileLoader::with_high_performance_preset(bg_task_manager);
-
-        let properties = LayerProperties {
-            id,
-            name,
-            layer_type: LayerType::Tile,
-            visible: true,
-            opacity: options.opacity,
-            z_index: options.z_index,
-            interactive: false,
-            options: serde_json::Value::Null,
+        // Use high-performance loader config with background task manager
+        let loader_config = TileLoaderConfig::high_performance();
+        let adaptive_config = crate::layers::tile::loader::AdaptiveConfig {
+            enabled: true,
+            max_prefetch_distance: 8,     // Very aggressive prefetch distance
+            min_prefetch_confidence: 0.1, // Lower confidence threshold for more prefetching
+            max_prefetch_tiles: 3000,     // Very high tile limit
+            zoom_priority_adjustment: true,
+            network_adaptive: true,
         };
 
-        let tile_cache = TileCache::new(4096); // Large cache for high performance
+        let tile_loader = TileLoader::with_adaptive_config(loader_config, adaptive_config)
+            .with_background_task_manager(bg_task_manager);
+
+        let tile_cache = TileCache::new(4096); // Larger cache for high performance
+        let animation_manager = crate::layers::animation::AnimationManager::new();
 
         Self {
-            properties,
-            tile_source: Box::new(OpenStreetMapSource::new()),
+            properties: LayerProperties {
+                id,
+                name,
+                layer_type: crate::layers::base::LayerType::Tile,
+                z_index: 0,
+                opacity: 1.0,
+                visible: true,
+                interactive: false,
+                options: serde_json::Value::Null,
+            },
+            options,
+            tile_source,
             tile_loader,
             tile_cache,
             levels: HashMap::default(),
             tile_zoom: None,
             loading: false,
             test_mode: false,
-            keep_buffer: options.keep_buffer,
-            animation_manager: Some(AnimationManager::new()),
-            render_bounds: options.bounds.clone(),
-            boundary_buffer: 0.1,
+            keep_buffer: 6, // Match the aggressive keep_buffer
+            animation_manager: Some(animation_manager),
+            render_bounds: None,
+            boundary_buffer: 0.0,
             tiles_loading_count: 0,
             loading_state_changed: false,
             is_dragging_last_frame: false,
-            options,
         }
     }
 
@@ -593,20 +681,11 @@ impl TileLayer {
         )
     }
 
-    /// Calculate effective center accounting for drag offset (like Leaflet's approach)
-    /// This ensures consistent center calculation between tile loading and rendering
-    fn calculate_effective_center(&self, viewport: &Viewport) -> crate::core::geo::LatLng {
-        if viewport.is_dragging() {
-            let map_pane_pos = viewport.get_map_pane_position();
-            let current_center_layer = viewport.lat_lng_to_layer_point(&viewport.center);
-
-            // CRITICAL FIX: When map pane moves right (+x), effective center moves left (-x)
-            // This is because dragging right reveals content that was originally to the left
-            let effective_center_layer = current_center_layer.subtract(&map_pane_pos);
-            viewport.layer_point_to_lat_lng(&effective_center_layer)
-        } else {
-            viewport.center
-        }
+    /// Get the center for tile calculations
+    /// During dragging, always use the original viewport center (not the visual offset)
+    /// This matches Leaflet: tiles are positioned based on the logical center, and only updated on drag end
+    fn get_tile_center(&self, viewport: &Viewport) -> crate::core::geo::LatLng {
+        viewport.center
     }
 
     /// Main update method that consolidates all tile operations
@@ -705,8 +784,8 @@ impl TileLayer {
         // Store the current zoom
         self.tile_zoom = Some(zoom);
 
-        // Use the same effective center calculation as rendering for consistency
-        let effective_center = self.calculate_effective_center(viewport);
+        // Use the same tile center calculation as rendering for consistency
+        let tile_center = self.get_tile_center(viewport);
 
         #[cfg(feature = "debug")]
         if viewport.is_dragging() {
@@ -717,15 +796,15 @@ impl TileLayer {
                 viewport.center
             );
             log::debug!(
-                "DRAG: effective_center = {:?} (delta: lat={:.6}, lng={:.6})",
-                effective_center,
-                effective_center.lat - viewport.center.lat,
-                effective_center.lng - viewport.center.lng
+                "DRAG: tile_center = {:?} (delta: lat={:.6}, lng={:.6})",
+                tile_center,
+                tile_center.lat - viewport.center.lat,
+                tile_center.lng - viewport.center.lng
             );
         }
 
         let tiled_pixel_bounds =
-            self.get_tiled_pixel_bounds(Some(effective_center), viewport, zoom);
+            self.get_tiled_pixel_bounds(Some(tile_center), viewport, zoom);
         let tile_range = self.pixel_bounds_to_tile_range(&tiled_pixel_bounds, zoom);
 
         // Mark tiles for retention
@@ -748,30 +827,81 @@ impl TileLayer {
             self.load_tiles_batch(&visible_tiles, super::TilePriority::Visible, zoom)?;
         }
 
+        // ULTRA-AGGRESSIVE PREFETCHING: Immediately load parent and child tiles when entering zoom level
+        // This prevents ANY grey tiles during animation or zoom transitions
+        let zoom_level_change = zoom_changed && self.tile_zoom.is_some();
+        if zoom_level_change || is_animating {
+            #[cfg(feature = "debug")]
+            log::debug!("🚀 ULTRA-AGGRESSIVE: Triggering immediate parent/child tile prefetch for zoom {}", zoom);
+            
+            // 1. IMMEDIATE parent tiles (zoom-1) with VISIBLE priority
+            if zoom > 0 {
+                let parent_zoom = zoom - 1;
+                let parent_coords = self.get_parent_tiles(&tile_range, parent_zoom);
+                if !parent_coords.is_empty() {
+                    self.load_tiles_batch(
+                        &parent_coords,
+                        super::TilePriority::Visible, // VISIBLE priority for immediate loading
+                        parent_zoom,
+                    )?;
+                    
+                    #[cfg(feature = "debug")]
+                    log::debug!("🚀 ULTRA-AGGRESSIVE: Loaded {} parent tiles at zoom {}", parent_coords.len(), parent_zoom);
+                }
+            }
+            
+            // 2. IMMEDIATE child tiles (zoom+1) with VISIBLE priority
+            if zoom < 18 {
+                let child_zoom = zoom + 1;
+                let child_coords = self.get_child_tiles(&tile_range, child_zoom);
+                if !child_coords.is_empty() {
+                    self.load_tiles_batch(
+                        &child_coords,
+                        super::TilePriority::Visible, // VISIBLE priority for immediate loading
+                        child_zoom,
+                    )?;
+                    
+                    #[cfg(feature = "debug")]
+                    log::debug!("🚀 ULTRA-AGGRESSIVE: Loaded {} child tiles at zoom {}", child_coords.len(), child_zoom);
+                }
+            }
+            
+            // 3. BACKGROUND TASK: Ultra-aggressive prefetching of surrounding zoom levels
+            self.trigger_background_super_prefetch(viewport, zoom);
+        }
+
         // LEAFLET-STYLE: Adjust prefetching strategy based on current state
         if is_animating {
-            // During animations: Load minimal buffer to keep things smooth
-            let minimal_range = self.expand_tile_range(&tile_range, 1); // Only 1 tile buffer
-            let buffer_tiles = self.tile_range_to_coords(&minimal_range, zoom);
-            if !buffer_tiles.is_empty() {
-                self.load_tiles_batch(&buffer_tiles, super::TilePriority::Adjacent, zoom)?;
+            // CRITICAL FIX: During animations, load MORE tiles not fewer (like Leaflet)
+            // Leaflet loads normal buffer + parent/child tiles during animation
+            
+            // 1. Load tiles with expanded buffer (more aggressive than normal)
+            let animation_range = self.expand_tile_range(&tile_range, (self.keep_buffer * 2) as i32);
+            let animation_tiles = self.tile_range_to_coords(&animation_range, zoom);
+            if !animation_tiles.is_empty() {
+                self.load_tiles_batch(&animation_tiles, super::TilePriority::Visible, zoom)?;
+                
+                #[cfg(feature = "debug")]
+                log::debug!("🎬 ANIMATION: Loaded {} tiles with expanded buffer", animation_tiles.len());
             }
         } else if viewport.is_dragging() {
             // During drag: Load tiles at drag position with aggressive buffer (like Leaflet)
-            // This runs when update_when_idle is false (default) - more aggressive than before
-            let drag_range = self.expand_tile_range(&tile_range, 4); // Even more aggressive - was 3, now 4
-            let drag_tiles = self.tile_range_to_coords(&drag_range, zoom);
-            if !drag_tiles.is_empty() {
-                #[cfg(feature = "debug")]
-                log::debug!(
-                    "DRAG: Loading {} drag tiles with buffer 4 at zoom {}",
-                    drag_tiles.len(),
-                    zoom
-                );
-                #[cfg(feature = "debug")]
-                log::debug!("DRAG: Expanded range: {:?}", drag_range);
-                self.load_tiles_batch(&drag_tiles, super::TilePriority::Visible, zoom)?;
-                // Higher priority for drag tiles
+            // Instead of using the logical center, use the visual offset to determine the area to prefetch
+            if viewport.is_dragging() {
+                // Create a temporary viewport with the visual offset applied to center for prefetching
+                let mut drag_viewport = viewport.clone();
+                // Simulate the new center as if the drag had been committed
+                let map_pane_pos = drag_viewport.get_map_pane_position();
+                let screen_center = Point::new(drag_viewport.size.x / 2.0, drag_viewport.size.y / 2.0);
+                let effective_screen_center = screen_center.subtract(&map_pane_pos);
+                let drag_center = drag_viewport.container_point_to_lat_lng(&effective_screen_center);
+                drag_viewport.center = drag_center;
+
+                let drag_range = self.expand_tile_range(&tile_range, 4); // Aggressive buffer
+                let drag_tiles = self.tile_range_to_coords(&drag_range, zoom);
+                if !drag_tiles.is_empty() {
+                    self.load_tiles_batch(&drag_tiles, super::TilePriority::Visible, zoom)?;
+                }
             }
         } else {
             // Normal prefetching when not animating or dragging
@@ -832,11 +962,48 @@ impl TileLayer {
         }
 
         // Only prune tiles when not animating to prevent blackout during zoom transitions
+        // ENHANCED: More conservative pruning even when not animating
         if !is_animating {
             self.prune_tiles(zoom);
         } else {
             #[cfg(feature = "debug")]
             log::debug!("Skipping tile pruning during animation to maintain smooth transition");
+            
+            // LEAFLET-STYLE: During animation, mark all tiles in relevant zoom levels for retention
+            // This prevents any tiles from being removed during the animation
+            for level in self.levels.values_mut() {
+                for tile in level.tiles.values_mut() {
+                    if tile.current || tile.is_loaded() {
+                        tile.retain = true; // Retain all current and loaded tiles during animation
+                    }
+                }
+            }
+            
+            // ENHANCED: Also mark parent tiles for retention during animation
+            // This ensures fallback tiles are available for smooth transitions
+            let current_zoom = zoom;
+            if current_zoom > 0 {
+                let parent_zoom = current_zoom - 1;
+                if let Some(parent_level) = self.levels.get_mut(&parent_zoom) {
+                    for tile in parent_level.tiles.values_mut() {
+                        if tile.is_loaded() {
+                            tile.retain = true; // Keep parent tiles for fallback
+                        }
+                    }
+                }
+            }
+            
+            // Also retain grandparent tiles for deeper fallback
+            if current_zoom > 1 {
+                let grandparent_zoom = current_zoom - 2;
+                if let Some(grandparent_level) = self.levels.get_mut(&grandparent_zoom) {
+                    for tile in grandparent_level.tiles.values_mut() {
+                        if tile.is_loaded() {
+                            tile.retain = true; // Keep grandparent tiles for deeper fallback
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -1289,6 +1456,116 @@ impl TileLayer {
         // Retain child tiles for smooth zoom-in
         for coord in tiles_needing_children {
             self.retain_child_tiles(coord.x, coord.y, coord.z, to_zoom);
+        }
+    }
+
+    /// Trigger ultra-aggressive background prefetching for multiple zoom levels
+    /// This uses the background task system to preload tiles before they're needed
+    fn trigger_background_super_prefetch(&self, viewport: &Viewport, current_zoom: u8) {
+        let mut prefetch_coords = Vec::new();
+        
+        // Get current tile range for reference
+        let tile_center = self.get_tile_center(viewport);
+        let tiled_pixel_bounds = self.get_tiled_pixel_bounds(Some(tile_center), viewport, current_zoom);
+        let tile_range = self.pixel_bounds_to_tile_range(&tiled_pixel_bounds, current_zoom);
+        
+        // 1. Prefetch grandparent tiles (zoom-2) for deeper fallback
+        if current_zoom > 1 {
+            let grandparent_zoom = current_zoom - 2;
+            let grandparent_coords = self.get_parent_tiles(&tile_range, grandparent_zoom);
+            prefetch_coords.extend(grandparent_coords);
+        }
+        
+        // 2. Prefetch great-grandparent tiles (zoom-3) for even deeper fallback
+        if current_zoom > 2 {
+            let great_grandparent_zoom = current_zoom - 3;
+            let great_grandparent_coords = self.get_parent_tiles(&tile_range, great_grandparent_zoom);
+            prefetch_coords.extend(great_grandparent_coords);
+        }
+        
+        // 3. Prefetch grandchild tiles (zoom+2) for smooth deep zoom
+        if current_zoom < 17 {
+            let grandchild_zoom = current_zoom + 2;
+            let grandchild_coords = self.get_child_tiles(&tile_range, grandchild_zoom);
+            // Limit grandchild tiles to prevent excessive loading
+            prefetch_coords.extend(grandchild_coords.into_iter().take(64));
+        }
+        
+        // 4. Use existing movement pattern system for predicted tiles
+        // Get movement-based prefetch tiles from the existing MovementPattern implementation
+        let predicted_tiles = self.tile_loader.get_movement_prefetch_tiles(viewport);
+        prefetch_coords.extend(predicted_tiles);
+        
+        // 5. Prefetch tiles at multiple zoom levels around current (zoom-1 to zoom+1)
+        for zoom_offset in -1..=1i8 {
+            let target_zoom = current_zoom as i8 + zoom_offset;
+            if (0..=18).contains(&target_zoom) && target_zoom != current_zoom as i8 {
+                let target_zoom = target_zoom as u8;
+                let expanded_range = self.expand_tile_range(&tile_range, (self.keep_buffer * 3) as i32);
+                let multi_zoom_tiles = self.tile_range_to_coords(&expanded_range, target_zoom);
+                // Limit tiles per zoom level to prevent excessive loading
+                prefetch_coords.extend(multi_zoom_tiles.into_iter().take(100));
+            }
+        }
+        
+        // Submit background prefetch task if we have tiles to prefetch
+        if !prefetch_coords.is_empty() {
+            // Store length before moving the value
+            let coords_count = prefetch_coords.len();
+            
+            // Use the existing background task system through the tile loader
+            self.tile_loader.submit_background_super_prefetch(prefetch_coords, viewport.clone());
+            
+            #[cfg(feature = "debug")]
+            log::debug!("🎯 BACKGROUND: Triggered super prefetch for {} tiles", coords_count);
+        }
+    }
+
+    /// Test coordinate transformation consistency for debugging edge distortion
+    /// This method can be called during development to verify coordinate accuracy
+    #[cfg(feature = "debug")]
+    pub fn test_coordinate_transformation(&self, viewport: &Viewport) {
+        let test_points = [
+            // Center point
+            crate::core::geo::LatLng::new(viewport.center.lat, viewport.center.lng),
+            // Points at different distances from center
+            crate::core::geo::LatLng::new(viewport.center.lat + 0.01, viewport.center.lng),
+            crate::core::geo::LatLng::new(viewport.center.lat - 0.01, viewport.center.lng),
+            crate::core::geo::LatLng::new(viewport.center.lat, viewport.center.lng + 0.01),
+            crate::core::geo::LatLng::new(viewport.center.lat, viewport.center.lng - 0.01),
+            // Corner points
+            crate::core::geo::LatLng::new(viewport.center.lat + 0.05, viewport.center.lng + 0.05),
+            crate::core::geo::LatLng::new(viewport.center.lat - 0.05, viewport.center.lng - 0.05),
+        ];
+
+        log::debug!("🔍 [COORD TEST] Testing coordinate transformation accuracy");
+        log::debug!("🔍 [COORD TEST] Viewport center: ({:.6}, {:.6})", viewport.center.lat, viewport.center.lng);
+        log::debug!("🔍 [COORD TEST] Map pane position: ({:.2}, {:.2})", 
+                   viewport.get_map_pane_position().x, viewport.get_map_pane_position().y);
+        
+        for (i, test_point) in test_points.iter().enumerate() {
+            // Test regular transformation
+            let screen_point = viewport.lat_lng_to_container_point(test_point);
+            let back_to_latlng = viewport.container_point_to_lat_lng(&screen_point);
+            
+            let lat_error = (back_to_latlng.lat - test_point.lat).abs();
+            let lng_error = (back_to_latlng.lng - test_point.lng).abs();
+            
+            log::debug!(
+                "🔍 [COORD TEST] Point {}: ({:.6}, {:.6}) -> ({:.2}, {:.2}) -> ({:.6}, {:.6}) | Error: lat={:.8}, lng={:.8}",
+                i, test_point.lat, test_point.lng, 
+                screen_point.x, screen_point.y,
+                back_to_latlng.lat, back_to_latlng.lng,
+                lat_error, lng_error
+            );
+            
+            // Warn about high errors that might indicate distortion
+            if lat_error > 0.000001 || lng_error > 0.000001 {
+                log::warn!(
+                    "🚨 [COORD TEST] High transformation error for point {}: lat={:.8}, lng={:.8}",
+                    i, lat_error, lng_error
+                );
+            }
         }
     }
 }

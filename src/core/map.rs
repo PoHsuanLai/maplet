@@ -597,41 +597,83 @@ impl Map {
             self.update_orchestrator
                 .mark_animation_active(animation_state.progress < 1.0);
 
+            // CRITICAL FIX: Immediately update viewport to target state (like Leaflet)
+            // This ensures tiles for the new zoom level are loaded immediately
+            // Check if this is the first frame or if viewport needs updating
+            let needs_viewport_update = animation_state.progress == 0.0 || 
+                (self.viewport.center != animation_state.center || 
+                 (self.viewport.zoom - animation_state.zoom).abs() > 0.001);
+
+            if needs_viewport_update {
+                // Update viewport to target state immediately
+                self.viewport.center = animation_state.center;
+                self.viewport.zoom = animation_state.zoom;
+                
+                // ENHANCED: Trigger aggressive tile loading for animation (like Leaflet)
+                self.layer_manager.for_each_layer_mut(|layer| {
+                    if let Some(tile_layer) = layer
+                        .as_any_mut()
+                        .downcast_mut::<crate::layers::tile::TileLayer>()
+                    {
+                        // Force multiple tile updates to ensure coverage
+                        let _ = tile_layer.update_tiles(&self.viewport);
+                        
+                        // Additional prefetch for adjacent zoom levels during animation
+                        if animation_state.progress == 0.0 {
+                            // On first frame, also trigger background prefetching
+                            tile_layer.tile_loader().update_viewport(&self.viewport);
+                            
+                            // CRITICAL: Preload parent tiles immediately for fallback rendering
+                            // This ensures fallback tiles are available when animation starts
+                            let current_zoom = self.viewport.zoom.floor() as u8;
+                            if current_zoom > 0 {
+                                let parent_bounds = tile_layer.get_tiled_pixel_bounds(
+                                    Some(self.viewport.center), 
+                                    &self.viewport, 
+                                    current_zoom - 1
+                                );
+                                let parent_range = tile_layer.pixel_bounds_to_tile_range(&parent_bounds, current_zoom - 1);
+                                let parent_tiles = tile_layer.tile_range_to_coords(&parent_range, current_zoom - 1);
+                                
+                                // Load parent tiles with high priority for immediate fallback
+                                for coord in parent_tiles {
+                                    let _ = tile_layer.tile_loader().queue_tile(
+                                        tile_layer.tile_source(),
+                                        coord,
+                                        crate::layers::tile::TilePriority::Visible
+                                    );
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Set transform for visual animation (like Leaflet's CSS transforms)
             self.viewport.set_transform(animation_state.transform);
 
             if animation_state.progress < 1.0 {
-                let temp_center = self.viewport.center;
-                let temp_zoom = self.viewport.zoom;
-
-                self.viewport.center = animation_state.center;
-                self.viewport.zoom = animation_state.zoom;
-
-                self.layer_manager.for_each_layer_mut(|layer| {
-                    if let Some(tile_layer) = layer
-                        .as_any_mut()
-                        .downcast_mut::<crate::layers::tile::TileLayer>()
-                    {
-                        let _ = tile_layer.update_tiles(&self.viewport);
-                    }
-                });
-
-                self.viewport.center = temp_center;
-                self.viewport.zoom = temp_zoom;
-
+                // Animation still in progress - keep updating layers
                 self.update_orchestrator.mark_layers_need_update();
             } else {
+                // CRITICAL FIX: Animation complete - ensure perfect alignment with target state
+                // Set viewport to EXACT animation target before clearing transform
                 self.viewport.center = animation_state.center;
                 self.viewport.zoom = animation_state.zoom;
-                self.viewport.clear_transform();
-
+                
+                // Trigger a final tile update to ensure tiles are positioned correctly for final state
                 self.layer_manager.for_each_layer_mut(|layer| {
                     if let Some(tile_layer) = layer
                         .as_any_mut()
                         .downcast_mut::<crate::layers::tile::TileLayer>()
                     {
+                        // Final tile update with exact target state
                         let _ = tile_layer.update_tiles(&self.viewport);
                     }
                 });
+                
+                // Now clear transform after ensuring perfect state alignment
+                self.viewport.clear_transform();
 
                 self.event_manager.emit(MapEvent::ZoomEnd {
                     zoom: animation_state.zoom,

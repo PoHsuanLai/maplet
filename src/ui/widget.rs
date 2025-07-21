@@ -328,9 +328,23 @@ fn render_map(ui: &mut Ui, rect: Rect, core_map: &Arc<Mutex<CoreMap>>) {
                                                 bounds,
                                                 &viewport_transform,
                                             );
+                                        } else if is_dragging {
+                                            // CRITICAL FIX: Apply map pane position offset during dragging (like Leaflet)
+                                            // This prevents tile stretching by moving all tiles together
+                                            let map_pane_pos = map_guard.viewport().get_map_pane_position();
+                                            let drag_transform = crate::core::viewport::Transform {
+                                                translate: map_pane_pos,
+                                                scale: 1.0,
+                                                origin: Point::new(0.0, 0.0),
+                                            };
+                                            render_tile_with_transform(
+                                                ui,
+                                                rect,
+                                                data,
+                                                bounds,
+                                                &drag_transform,
+                                            );
                                         } else {
-                                            // CRITICAL FIX: Don't apply drag transform since tiles are already positioned correctly
-                                            // The tile layer now calculates positions using effective center during drag
                                             render_tile(ui, rect, data, bounds);
                                         }
                                     }
@@ -345,9 +359,23 @@ fn render_map(ui: &mut Ui, rect: Rect, core_map: &Arc<Mutex<CoreMap>>) {
                                                 bounds,
                                                 &viewport_transform,
                                             );
+                                        } else if is_dragging {
+                                            // CRITICAL FIX: Apply map pane position offset during dragging (like Leaflet)
+                                            // This prevents tile stretching by moving all tiles together
+                                            let map_pane_pos = map_guard.viewport().get_map_pane_position();
+                                            let drag_transform = crate::core::viewport::Transform {
+                                                translate: map_pane_pos,
+                                                scale: 1.0,
+                                                origin: Point::new(0.0, 0.0),
+                                            };
+                                            render_textured_tile_with_transform(
+                                                ui,
+                                                rect,
+                                                *texture_id,
+                                                bounds,
+                                                &drag_transform,
+                                            );
                                         } else {
-                                            // CRITICAL FIX: Don't apply drag transform since tiles are already positioned correctly
-                                            // The tile layer now calculates positions using effective center during drag
                                             render_textured_tile(ui, rect, *texture_id, bounds);
                                         }
                                     }

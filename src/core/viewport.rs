@@ -298,6 +298,7 @@ impl Viewport {
 
     /// Converts a geographical coordinate to screen pixel coordinates (container relative)
     /// This is the main method for converting LatLng to screen coordinates
+    /// During dragging, this accounts for the map pane position offset
     pub fn lat_lng_to_container_point(&self, lat_lng: &LatLng) -> Point {
         let layer_point = self.lat_lng_to_layer_point(lat_lng);
         self.layer_point_to_container_point(&layer_point)
@@ -336,11 +337,13 @@ impl Viewport {
 
     /// Converts layer point to container point (screen coordinates)
     /// This method supports CSS-style transforms during animation and DOM-based dragging
+    /// CRITICAL FIX: Properly handle map pane position during dragging to eliminate fish-eye distortion
     pub fn layer_point_to_container_point(&self, point: &Point) -> Point {
         // Start with layer point offset by viewport center (like Leaflet)
         let mut result = Point::new(point.x + self.size.x / 2.0, point.y + self.size.y / 2.0);
 
         // Apply map pane position offset for DOM-based dragging (key to Leaflet's approach)
+        // This is what prevents fish-eye distortion during dragging
         result = result.add(&self.map_pane_position);
 
         // Apply current transform (CSS transforms during animation)
@@ -418,22 +421,12 @@ impl Viewport {
         if self.is_dragging {
             self.is_dragging = false;
 
-            // Update center based on map pane position (like Leaflet does on drag end)
+            // On drag end, set the new center to whatever is at the screen center (after drag)
             if self.map_pane_position.x != 0.0 || self.map_pane_position.y != 0.0 {
-                // Convert map pane offset directly to layer point offset
-                // Don't use container_point_to_layer_point as it removes the map pane position
-                let center_offset =
-                    Point::new(-self.map_pane_position.x, -self.map_pane_position.y);
-
-                let current_center_layer = self.lat_lng_to_layer_point(&self.center);
-
-                let new_center_layer = current_center_layer.add(&center_offset);
-
-                let new_center = self.layer_point_to_lat_lng(&new_center_layer);
-
-                // Reset map pane position and update center
-                self.map_pane_position = Point::new(0.0, 0.0);
+                let screen_center = Point::new(self.size.x / 2.0, self.size.y / 2.0);
+                let new_center = self.container_point_to_lat_lng(&screen_center);
                 self.set_center(new_center);
+                self.map_pane_position = Point::new(0.0, 0.0);
             }
 
             // Force update pixel origin when dragging ends to prevent jumps

@@ -22,9 +22,9 @@ pub struct ZoomAnimation {
     duration: Duration,
     from_transform: Transform,
     to_transform: Transform,
-    from_center: LatLng,
+    _from_center: LatLng,
     to_center: LatLng,
-    from_zoom: f64,
+    _from_zoom: f64,
     to_zoom: f64,
     active: bool,
     focus_point: Option<Point>,
@@ -67,9 +67,9 @@ impl ZoomAnimation {
             duration,
             from_transform: Transform::identity(),
             to_transform: Transform::new(translation, scale_factor, origin),
-            from_center,
+            _from_center: from_center,
             to_center,
-            from_zoom: from_zoom_level, // Use rounded zoom levels
+            _from_zoom: from_zoom_level, // Use rounded zoom levels
             to_zoom: to_zoom_level,     // Use rounded zoom levels
             active: true,
             focus_point,
@@ -82,11 +82,25 @@ impl ZoomAnimation {
         }
 
         let elapsed = self.start_time.elapsed();
+        
+        // CRITICAL FIX: On first frame, immediately return target state (like Leaflet)
+        // This ensures tiles for the new zoom level are loaded immediately
+        if elapsed.as_millis() == 0 {
+            return Some(ZoomAnimationState {
+                transform: self.from_transform, // Keep visual transform at start
+                center: self.to_center,        // But viewport goes to target immediately
+                zoom: self.to_zoom,            // Target zoom for tile loading
+                progress: 0.0,                 // First frame
+                fps: 60.0,
+            });
+        }
+
         if elapsed >= self.duration {
             self.active = false;
-            // Return exact target state to prevent overshoot
+            // CRITICAL FIX: Return identity transform for final state to prevent snap back
+            // This ensures the final frame has no transform applied, matching the cleared state
             return Some(ZoomAnimationState {
-                transform: self.to_transform,
+                transform: Transform::identity(), // Identity transform for seamless clearing
                 center: self.to_center,
                 zoom: self.to_zoom,
                 progress: 1.0,
@@ -99,16 +113,24 @@ impl ZoomAnimation {
         // Use fixed ease-out cubic easing
         let eased_progress = ease_out_cubic(progress);
 
-        // Interpolate transform using fixed easing
-        let current_transform = self.from_transform.lerp(&self.to_transform, eased_progress);
+        // CRITICAL FIX: In the final 10% of animation, gradually transition to identity transform
+        // This prevents snap back by smoothly aligning with the final cleared state
+        let current_transform = if eased_progress > 0.9 {
+            // In final 10%, lerp from current transform to identity
+            let final_transition = (eased_progress - 0.9) / 0.1; // 0.0 to 1.0 in final 10%
+            let current_animated_transform = self.from_transform.lerp(&self.to_transform, eased_progress);
+            current_animated_transform.lerp(&Transform::identity(), final_transition)
+        } else {
+            // Normal animation for first 90%
+            self.from_transform.lerp(&self.to_transform, eased_progress)
+        };
 
-        let current_center = self.from_center.lerp(&self.to_center, eased_progress);
-        let current_zoom = self.from_zoom.lerp(&self.to_zoom, eased_progress);
-
+        // Keep viewport at target state (like Leaflet)
+        // The visual animation is handled by the transform
         Some(ZoomAnimationState {
             transform: current_transform,
-            center: current_center,
-            zoom: current_zoom,
+            center: self.to_center,  // Always target center
+            zoom: self.to_zoom,      // Always target zoom
             progress: eased_progress,
             fps: 60.0,
         })
@@ -243,17 +265,27 @@ impl AnimationManager {
         let animation = ZoomAnimation::new(from_center, to_center, from_zoom, to_zoom, focus_point);
 
         println!(
-            "🎬 [ANIMATION] Starting simple zoom: {:.1} -> {:.1}",
-            from_zoom, to_zoom
+            "🎬 [ANIMATION] Starting zoom animation: {:.1} -> {:.1} (diff: {:.1})",
+            from_zoom, to_zoom, (to_zoom - from_zoom).abs()
         );
 
         self.current_zoom_animation = Some(animation);
 
-        // Keep rendering for a bit after animation completes
+        // Keep rendering for a bit after animation completes to ensure tiles are ready
         self.keep_rendering_until =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(300));
 
         true
+    }
+
+    /// Check if we're in the critical first phase of animation (needs aggressive tile loading)
+    pub fn is_starting_animation(&self) -> bool {
+        if let Some(animation) = &self.current_zoom_animation {
+            let elapsed = animation.start_time.elapsed();
+            elapsed.as_millis() < 50 // First 50ms is critical for tile loading
+        } else {
+            false
+        }
     }
 }
 

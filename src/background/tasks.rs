@@ -125,7 +125,7 @@ pub struct BackgroundTaskManager {
     result_rx: Receiver<TaskResult>,
     semaphore: Semaphore,
     _worker_handle: Option<Box<dyn runtime::AsyncHandle>>,
-    shutdown_signal: Arc<AtomicBool>,
+    _shutdown_signal: Arc<AtomicBool>,
 }
 
 impl BackgroundTaskManager {
@@ -161,7 +161,7 @@ impl BackgroundTaskManager {
             result_rx,
             semaphore,
             _worker_handle: worker_handle,
-            shutdown_signal,
+            _shutdown_signal: shutdown_signal,
         }
     }
 
@@ -181,7 +181,7 @@ impl BackgroundTaskManager {
 
     /// Submit a task for background processing
     pub fn submit_task(&self, task: Arc<dyn BackgroundTask>) -> Result<()> {
-        let task_id = task.task_id().to_string();
+        let _task_id = task.task_id().to_string();
         let priority = task.priority();
 
         if self.config.test_mode {
@@ -207,12 +207,12 @@ impl BackgroundTaskManager {
 
     /// Shutdown the task manager and all worker threads
     pub fn shutdown(&self) {
-        self.shutdown_signal.store(true, AtomicOrdering::SeqCst);
+        self._shutdown_signal.store(true, AtomicOrdering::SeqCst);
     }
 
     /// Check if the task manager is shutting down
     pub fn is_shutting_down(&self) -> bool {
-        self.shutdown_signal.load(AtomicOrdering::SeqCst)
+        self._shutdown_signal.load(AtomicOrdering::SeqCst)
     }
 
     /// Try to receive completed task results (non-blocking)
@@ -250,7 +250,7 @@ impl BackgroundTaskManager {
         result_tx: Sender<TaskResult>,
         semaphore: Semaphore,
         config: TaskManagerConfig,
-        shutdown_signal: Arc<AtomicBool>,
+        _shutdown_signal: Arc<AtomicBool>,
     ) {
         let mut task_queue = BinaryHeap::new();
         let mut last_activity = std::time::Instant::now();

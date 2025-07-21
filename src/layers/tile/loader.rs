@@ -942,6 +942,33 @@ impl TileLoader {
     pub fn update_config(&self, new_config: TileLoaderConfig) -> Self {
         Self::new(new_config)
     }
+
+    /// Get movement-based prefetch tiles using the existing MovementPattern system
+    pub fn get_movement_prefetch_tiles(&self, viewport: &Viewport) -> Vec<TileCoord> {
+        if let Ok(pattern) = self.movement_pattern.lock() {
+            pattern.get_prefetch_tiles(viewport)
+        } else {
+            Vec::new()
+        }
+    }
+    
+    /// Submit background super prefetch task using the existing background task system
+    pub fn submit_background_super_prefetch(&self, coords: Vec<TileCoord>, viewport: Viewport) {
+        if let Some(ref bg_task_manager) = self.bg_task_manager {
+            let task = TilePrefetchTask::new(
+                format!("super_prefetch_{}_{}", viewport.zoom, viewport.center.lat),
+                coords,
+                viewport,
+                self.network_metrics.clone(),
+            )
+            .with_priority(crate::background::TaskPriority::High);
+            
+            if let Err(e) = bg_task_manager.submit_task(std::sync::Arc::new(task)) {
+                #[cfg(feature = "debug")]
+                log::warn!("Failed to submit super prefetch task: {}", e);
+            }
+        }
+    }
 }
 
 /// Background task for intelligent tile prefetching based on movement patterns

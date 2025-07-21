@@ -239,11 +239,9 @@ impl MapOperations {
     ) -> Result<()> {
         match action {
             Action::Pan { delta, .. } => {
-                if viewport.is_dragging() {
-                    viewport.raw_pan_by(delta);
-                } else {
-                    Self::pan(viewport, delta)?;
-                }
+                // During drag, only update the map pane position (visual offset)
+                // Do NOT update the viewport center here
+                viewport.raw_pan_by(delta);
             }
             Action::Zoom {
                 level, focus_point, ..
@@ -260,6 +258,7 @@ impl MapOperations {
                 viewport.start_drag();
             }
             Action::EndDrag => {
+                // On drag end, update the center based on the final map pane position
                 viewport.end_drag();
             }
         }

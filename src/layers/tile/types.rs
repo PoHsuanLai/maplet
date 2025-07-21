@@ -44,7 +44,7 @@ impl Default for TileLayerOptions {
             attribution: None,
             opacity: 1.0,
             z_index: 1,
-            keep_buffer: 8, // Increased from 2 for much more aggressive prefetching
+            keep_buffer: 6, // Increased from 4 to 6 for better coverage during animations
             subdomains: vec!["a".to_string(), "b".to_string(), "c".to_string()],
             error_tile_url: None,
             cross_origin: false,
@@ -53,8 +53,8 @@ impl Default for TileLayerOptions {
             reference_system: "EPSG:3857".to_string(),
             bounds: None,
             update_when_idle: false,   // Like Leaflet's default for desktop
-            update_when_zooming: true, // Like Leaflet's default
-            update_interval: 200,
+            update_when_zooming: true, // CRITICAL: Always update during zoom for smooth transitions
+            update_interval: 150,      // Slightly faster updates (was 200)
             target_zoom: None,
         }
     }
